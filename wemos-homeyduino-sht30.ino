@@ -28,7 +28,7 @@ const char* deviceName = "Wemos-SHT30-Sensor";
 const unsigned long MEASURE_INTERVAL = 15000; // Measurement interval in milliseconds (15 seconds)
 
 // --- Globals ---
-SHT3X sht30(0x44); // I2C address 0x44 (default for SHT30 shield)
+SHT3X sht30(0x45); // I2C address 0x45 (user configured)
 unsigned long lastMeasureTime = 0;
 
 // Track last sent values to avoid unnecessary duplicates (optional, but good practice)
