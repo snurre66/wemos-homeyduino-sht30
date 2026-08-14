@@ -18,7 +18,7 @@
 #include <WiFiClient.h>
 #include <Wire.h>
 #include <Homey.h>
-#include <WEMOS_SHT3X.h>
+#include <Adafruit_SHT31.h>
 
 // Include the local secrets file containing WiFi SSID and password
 #include "secrets.h"
@@ -28,7 +28,7 @@ const char* deviceName = "Wemos-SHT30-Sensor";
 const unsigned long MEASURE_INTERVAL = 15000; // Measurement interval in milliseconds (15 seconds)
 
 // --- Globals ---
-SHT3X sht30(0x45); // I2C address 0x45 (user configured)
+Adafruit_SHT31 sht30 = Adafruit_SHT31();
 unsigned long lastMeasureTime = 0;
 
 // Track last sent values to avoid unnecessary duplicates (optional, but good practice)
@@ -80,9 +80,13 @@ void setup() {
   Homey.addCapability("measure_humidity");
   Serial.println("Capabilities registered: measure_temperature, measure_humidity");
 
-  // Note: I2C pins D1 (SCL) and D2 (SDA) are initialized automatically by Wemos core Wire library,
-  // but we can explicitly call Wire.begin() to be safe.
+  // Initialize I2C and SHT30 Sensor
   Wire.begin();
+  if (!sht30.begin(0x45)) {
+    Serial.println("ERROR: SHT30 sensor shield not found at address 0x45!");
+  } else {
+    Serial.println("SHT30 sensor successfully initialized.");
+  }
   
   Serial.println("Sensor configuration complete. Starting measurement loop.");
 }
@@ -105,11 +109,11 @@ void readAndReportSensor() {
   Serial.print(millis() / 1000);
   Serial.print("s] Reading sensor... ");
 
-  // sht30.get() returns 0 on success
-  if (sht30.get() == 0) {
-    float temp = sht30.cTemp;
-    float hum = sht30.humidity;
+  float temp = sht30.readTemperature();
+  float hum = sht30.readHumidity();
 
+  // Check if readings are valid (not NaN)
+  if (!isnan(temp) && !isnan(hum)) {
     Serial.print("Temp: ");
     Serial.print(temp, 1);
     Serial.print(" °C | Hum: ");

@@ -34,7 +34,7 @@ If you haven't already configured the Arduino IDE for ESP8266:
 ### 2. Required Libraries
 Install the following libraries via **Tools > Manage Libraries...**:
 - **Homeyduino** (by Athom)
-- **WEMOS SHT3x Arduino Library** (by WEMOS)
+- **Adafruit SHT31 Library** (by Adafruit) — When prompted to install dependencies (such as *Adafruit BusIO*), choose **"Install All"**.
 
 ### 3. WiFi Credentials Configuration
 This repository keeps WiFi credentials secure by separating them into `secrets.h`, which is listed in `.gitignore` so that it is never committed to GitHub.
