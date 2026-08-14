@@ -1,0 +1,19 @@
+# Ignore WiFi secrets containing credentials
+secrets.h
+
+# Arduino IDE/Build files
+build/
+bin/
+out/
+*.local.txt
+
+# VS Code and editor config
+.vscode/
+.history/
+.idea/
+*.suo
+*.user
+
+# OS generated files
+.DS_Store
+Thumbs.db
