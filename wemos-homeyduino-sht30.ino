@@ -35,6 +35,7 @@
 #include <Homey.h>
 #include <Adafruit_SHT31.h>
 #include <ArduinoOTA.h>
+#include <ESP8266mDNS.h>
 #include <math.h>
 
 // Include the local secrets file containing WiFi SSID and password
@@ -149,6 +150,22 @@ void setupWiFi() {
   Serial.println(WiFi.localIP());
 }
 
+// Setup Multicast DNS (mDNS) responder
+void setupMDNS() {
+  Serial.print("Starting mDNS responder... ");
+  if (MDNS.begin(deviceName)) {
+    Serial.println("OK");
+    Serial.print("  ├─ Hostname: ");
+    Serial.print(deviceName);
+    Serial.println(".local");
+    Serial.print("  ├─ IP Address: ");
+    Serial.println(WiFi.localIP());
+    Serial.println("  └─ Status: Discoverable on local network as " + String(deviceName) + ".local");
+  } else {
+    Serial.println("FAILED (Error initializing mDNS responder)");
+  }
+}
+
 // Setup Over-The-Air (OTA) firmware updates
 void setupOTA() {
   // Set the OTA hostname (visible in Arduino IDE Network Ports)
@@ -181,7 +198,7 @@ void setupOTA() {
   });
 
   ArduinoOTA.begin();
-  Serial.println("OTA update service ready (Hostname: " + String(deviceName) + ")");
+  Serial.println("OTA service ready (Port: 8266, Hostname: " + String(deviceName) + ")");
 }
 
 void setup() {
@@ -192,6 +209,9 @@ void setup() {
 
   // Connect to WiFi
   setupWiFi();
+
+  // Initialize mDNS
+  setupMDNS();
 
   // Initialize OTA update service
   setupOTA();
@@ -230,6 +250,9 @@ void setup() {
 }
 
 void loop() {
+  // Keep mDNS service updated
+  MDNS.update();
+
   // Always handle incoming OTA updates
   ArduinoOTA.handle();
 
