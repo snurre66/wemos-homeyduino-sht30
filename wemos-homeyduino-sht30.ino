@@ -6,6 +6,11 @@
  * - Wemos D1 Mini (ESP8266)
  * - Wemos SHT30 Shield (connected via I2C on pins D1/SCL and D2/SDA)
  * 
+ * Features:
+ * - Real-time temperature & humidity monitoring with psychrometric derivations
+ * - Over-The-Air (OTA) wireless flashing support via Arduino IDE
+ * - Non-blocking timing loop
+ * 
  * Capabilities Reported to Homey:
  * 1. measure_temperature           - Ambient Temperature (°C)
  * 2. measure_humidity              - Relative Humidity (%)
@@ -18,6 +23,7 @@
  * Dependencies (install via Arduino Library Manager):
  * - Homeyduino (by Athom)
  * - Adafruit SHT31 Library (by Adafruit)
+ * - ArduinoOTA (included in ESP8266 core)
  * 
  * Credentials are kept in a separate file "secrets.h" to prevent them
  * from being committed to GitHub.
@@ -28,6 +34,7 @@
 #include <Wire.h>
 #include <Homey.h>
 #include <Adafruit_SHT31.h>
+#include <ArduinoOTA.h>
 #include <math.h>
 
 // Include the local secrets file containing WiFi SSID and password
@@ -142,6 +149,41 @@ void setupWiFi() {
   Serial.println(WiFi.localIP());
 }
 
+// Setup Over-The-Air (OTA) firmware updates
+void setupOTA() {
+  // Set the OTA hostname (visible in Arduino IDE Network Ports)
+  ArduinoOTA.setHostname(deviceName);
+
+  #ifdef OTA_PASSWORD
+  ArduinoOTA.setPassword(OTA_PASSWORD);
+  #endif
+
+  ArduinoOTA.onStart([]() {
+    String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
+    Serial.println("\n[OTA] Start updating " + type);
+  });
+
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\n[OTA] Update complete! Rebooting...");
+  });
+
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("[OTA] Progress: %u%%\r", (progress / (total / 100)));
+  });
+
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("[OTA] Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR) Serial.println("End Failed");
+  });
+
+  ArduinoOTA.begin();
+  Serial.println("OTA update service ready (Hostname: " + String(deviceName) + ")");
+}
+
 void setup() {
   // Start Serial communication for debugging
   Serial.begin(115200);
@@ -150,6 +192,9 @@ void setup() {
 
   // Connect to WiFi
   setupWiFi();
+
+  // Initialize OTA update service
+  setupOTA();
 
   // Initialize Homeyduino
   Serial.println("Initializing Homeyduino...");
@@ -185,6 +230,9 @@ void setup() {
 }
 
 void loop() {
+  // Always handle incoming OTA updates
+  ArduinoOTA.handle();
+
   // Always call Homey.loop() to process incoming network requests
   Homey.loop();
 

@@ -80,39 +80,28 @@ To configure your credentials:
 
 ---
 
-## Uploading the Code
+## Uploading Firmware
+
+### Initial Upload (via USB)
 1. Connect your Wemos D1 Mini to your computer via USB.
 2. Open [wemos-homeyduino-sht30.ino](./wemos-homeyduino-sht30.ino) in the Arduino IDE.
-3. Select the correct **COM Port** under **Tools > Port**.
-4. Click **Upload** (the right-arrow icon at the top-left).
-5. Once complete, open the **Serial Monitor** (**Tools > Serial Monitor**).
-6. Set the baud rate to **115200**. You should see the boot message, WiFi connection sequence, and sensor output:
+3. Select your board under **Tools > Board > ESP8266 Boards > LOLIN(WEMOS) D1 R2 & mini**.
+4. Select the correct **COM Port** under **Tools > Port**.
+5. Click **Upload** (the right-arrow icon at the top-left).
+6. Once complete, open the **Serial Monitor** (**Tools > Serial Monitor** at `115200` baud) to verify WiFi and sensor initialization.
+
+---
+
+### Subsequent Uploads (Wireless Over-The-Air / OTA)
+Once the sketch is uploaded over USB once and connected to your WiFi:
+1. Open the Arduino IDE on the same WiFi network.
+2. Go to **Tools > Port**.
+3. Under **Network Ports**, you will see:
    ```text
-   === Wemos D1 Mini SHT30 Shield Setup ===
-   Connecting to WiFi network: MyHomeWiFi
-   ....
-   WiFi successfully connected!
-   IP Address: 192.168.1.150
-   Initializing Homeyduino...
-   Capabilities registered:
-    - measure_temperature (Temp °C)
-    - measure_humidity (Rel Hum %)
-    - measure_dew_point (Dew Point °C)
-    - measure_humidity.absolute (Absolute Hum g/m³)
-    - measure_temperature.feels_like (Feels Like °C)
-    - measure_vpd (VPD kPa)
-    - alarm_generic (Mold Risk Alert)
-   Sensor configuration complete. Starting measurement loop.
-   
-   [15s] Reading sensor... 
-     ├─ Temp:          22.4 °C
-     ├─ Rel Humidity:  45.2 %
-     ├─ Dew Point:     9.8 °C
-     ├─ Abs Humidity:  8.94 g/m³
-     ├─ Feels Like:    21.7 °C
-     ├─ VPD:           1.48 kPa
-     └─ Mold Risk:     OK
+   Wemos-SHT30-Sensor at 192.168.x.x
    ```
+4. Select that network port and click **Upload**!
+5. The firmware will flash wirelessly over WiFi without needing to plug the device into your PC.
 
 ---
 
