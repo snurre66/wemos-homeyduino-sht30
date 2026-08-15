@@ -11,14 +11,17 @@
  * - Over-The-Air (OTA) wireless flashing support via Arduino IDE
  * - Non-blocking timing loop
  * 
- * Capabilities Reported to Homey:
+ * Capabilities Reported to Homey Device Card:
  * 1. measure_temperature           - Ambient Temperature (°C)
  * 2. measure_humidity              - Relative Humidity (%)
- * 3. measure_dew_point             - Calculated Dew Point (°C)
- * 4. measure_humidity.absolute     - Absolute Humidity (g/m³)
- * 5. measure_temperature.feels_like- Heat Index / Apparent "Feels Like" Temp (°C)
- * 6. measure_vpd                   - Vapor Pressure Deficit (kPa)
- * 7. alarm_generic                 - Mold / High Humidity Condensation Alert
+ * 3. alarm_generic                 - Mold / High Humidity Condensation Alert
+ * 
+ * Flow Triggers with Tag Values:
+ * - dew_point                      - Calculated Dew Point (°C)
+ * - absolute_humidity              - Absolute Humidity (g/m³)
+ * - heat_index                     - Heat Index / Apparent "Feels Like" Temp (°C)
+ * - vpd                            - Vapor Pressure Deficit (kPa)
+
  * 
  * Dependencies (install via Arduino Library Manager):
  * - Homeyduino (by Athom)
@@ -220,23 +223,20 @@ void setup() {
   Serial.println("Initializing Homeyduino...");
   Homey.begin(deviceName);
 
-  // Register device capabilities with Homey
+  // Register only standard Athom Homey capabilities (custom IDs cause Homey pairing to fail)
   Homey.addCapability("measure_temperature");
   Homey.addCapability("measure_humidity");
-  Homey.addCapability("measure_dew_point");
-  Homey.addCapability("measure_humidity.absolute");
-  Homey.addCapability("measure_temperature.feels_like");
-  Homey.addCapability("measure_vpd");
-  Homey.addCapability("alarm_generic");
+  Homey.addCapability("alarm_generic"); // Mold / Condensation Risk Alert
   
   Serial.println("Capabilities registered:");
   Serial.println(" - measure_temperature (Temp °C)");
   Serial.println(" - measure_humidity (Rel Hum %)");
-  Serial.println(" - measure_dew_point (Dew Point °C)");
-  Serial.println(" - measure_humidity.absolute (Absolute Hum g/m³)");
-  Serial.println(" - measure_temperature.feels_like (Feels Like °C)");
-  Serial.println(" - measure_vpd (VPD kPa)");
   Serial.println(" - alarm_generic (Mold Risk Alert)");
+  Serial.println("Triggers enabled for Homey Flows:");
+  Serial.println(" - dew_point (tag: °C)");
+  Serial.println(" - absolute_humidity (tag: g/m³)");
+  Serial.println(" - heat_index (tag: °C)");
+  Serial.println(" - vpd (tag: kPa)");
 
   // Initialize I2C and SHT30 Sensor
   Wire.begin();
@@ -295,7 +295,7 @@ void readAndReportSensor() {
     Serial.print("  ├─ VPD:           "); Serial.print(vpd, 2); Serial.println(" kPa");
     Serial.print("  └─ Mold Risk:     "); Serial.println(moldRisk ? "ALERT (>70% RH)" : "OK");
 
-    // Report values to Homey if they differ meaningfully from the last reported values
+    // Report standard capabilities to Homey
     // 1. Temperature (°C)
     if (abs(temp - lastTemp) >= 0.05f || lastTemp == -999.0f) {
       if (Homey.setCapabilityValue("measure_temperature", temp)) {
@@ -310,39 +310,32 @@ void readAndReportSensor() {
       }
     }
 
-    // 3. Dew Point (°C)
-    if (abs(dewPoint - lastDewPoint) >= 0.05f || lastDewPoint == -999.0f) {
-      if (Homey.setCapabilityValue("measure_dew_point", dewPoint)) {
-        lastDewPoint = dewPoint;
-      }
-    }
-
-    // 4. Absolute Humidity (g/m³)
-    if (abs(absHum - lastAbsHum) >= 0.05f || lastAbsHum == -999.0f) {
-      if (Homey.setCapabilityValue("measure_humidity.absolute", absHum)) {
-        lastAbsHum = absHum;
-      }
-    }
-
-    // 5. Feels Like / Heat Index (°C)
-    if (abs(heatIndex - lastHeatIndex) >= 0.05f || lastHeatIndex == -999.0f) {
-      if (Homey.setCapabilityValue("measure_temperature.feels_like", heatIndex)) {
-        lastHeatIndex = heatIndex;
-      }
-    }
-
-    // 6. Vapor Pressure Deficit (kPa)
-    if (abs(vpd - lastVpd) >= 0.02f || lastVpd == -999.0f) {
-      if (Homey.setCapabilityValue("measure_vpd", vpd)) {
-        lastVpd = vpd;
-      }
-    }
-
-    // 7. Mold Risk Alert (boolean)
+    // 3. Mold Risk Alert (alarm_generic)
     if (lastMoldRisk == -1 || ((lastMoldRisk == 1) != moldRisk)) {
       if (Homey.setCapabilityValue("alarm_generic", moldRisk)) {
         lastMoldRisk = moldRisk ? 1 : 0;
       }
+    }
+
+    // Emit Flow Triggers with tag values for Homey Flows
+    if (abs(dewPoint - lastDewPoint) >= 0.1f || lastDewPoint == -999.0f) {
+      Homey.trigger("dew_point", dewPoint);
+      lastDewPoint = dewPoint;
+    }
+
+    if (abs(absHum - lastAbsHum) >= 0.1f || lastAbsHum == -999.0f) {
+      Homey.trigger("absolute_humidity", absHum);
+      lastAbsHum = absHum;
+    }
+
+    if (abs(heatIndex - lastHeatIndex) >= 0.1f || lastHeatIndex == -999.0f) {
+      Homey.trigger("heat_index", heatIndex);
+      lastHeatIndex = heatIndex;
+    }
+
+    if (abs(vpd - lastVpd) >= 0.05f || lastVpd == -999.0f) {
+      Homey.trigger("vpd", vpd);
+      lastVpd = vpd;
     }
   } else {
     Serial.println("ERROR: Failed to read from SHT30 sensor shield!");
