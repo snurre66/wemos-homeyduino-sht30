@@ -16,6 +16,7 @@
  * 2. measure_humidity              - Relative Humidity (%)
  * 3. alarm_generic                 - Mold Risk Alert (RH >= 70%)
  * 4. alarm_water                   - Condensation Risk Alert (Temp - DewPoint <= 2.0°C)
+ * 5. alarm_generic.freeze          - Freezing / Frost Risk Alert (Temp <= 3.0°C)
  * 
  * Flow Triggers with Tag Values:
  * - dew_point                      - Calculated Dew Point (°C)
@@ -307,17 +308,19 @@ void setup() {
   Serial.println("Initializing Homeyduino...");
   Homey.begin(deviceName);
 
-  // Register only standard Athom Homey capabilities (custom IDs cause Homey pairing to fail)
+  // Register Homey capabilities (standard IDs and sub-capabilities)
   Homey.addCapability("measure_temperature");
   Homey.addCapability("measure_humidity");
-  Homey.addCapability("alarm_generic"); // Mold Risk Alert (>70% RH)
-  Homey.addCapability("alarm_water");   // Condensation Risk Alert (Temp approaches Dew Point)
+  Homey.addCapability("alarm_generic");        // Mold Risk Alert (RH >= 70%)
+  Homey.addCapability("alarm_water");          // Condensation Risk Alert (Temp approaches Dew Point)
+  Homey.addCapability("alarm_generic.freeze"); // Freezing / Frost Risk Alert (Temp <= 3.0°C)
   
   Serial.println("Capabilities registered:");
   Serial.println(" - measure_temperature (Temp °C)");
   Serial.println(" - measure_humidity (Rel Hum %)");
   Serial.println(" - alarm_generic (Mold Risk Alert)");
   Serial.println(" - alarm_water (Condensation Alert)");
+  Serial.println(" - alarm_generic.freeze (Freeze Risk Alert)");
   Serial.println("Triggers enabled for Homey Flows:");
   Serial.println(" - dew_point (tag: °C)");
   Serial.println(" - dew_point_spread (tag: °C)");
@@ -435,13 +438,15 @@ void readAndReportSensor() {
       }
     }
 
-    // 5. Freezing / Frost Risk Triggers
+    // 5. Freezing / Frost Risk Alert (alarm_generic.freeze)
     if (lastFreezeRisk == -1 || ((lastFreezeRisk == 1) != freezeRisk)) {
+      if (Homey.setCapabilityValue("alarm_generic.freeze", freezeRisk)) {
+        lastFreezeRisk = freezeRisk ? 1 : 0;
+      }
       Homey.trigger("freeze_risk", freezeRisk);
       if (freezeRisk) {
         Homey.trigger("frost_alert", temp);
       }
-      lastFreezeRisk = freezeRisk ? 1 : 0;
     }
 
     // Emit Flow Triggers with tag values for Homey Flows
