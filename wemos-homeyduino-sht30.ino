@@ -51,6 +51,18 @@ const unsigned long MEASURE_INTERVAL = 15000; // Measurement interval in millise
 // --- Globals ---
 Adafruit_SHT31 sht30 = Adafruit_SHT31();
 unsigned long lastMeasureTime = 0;
+bool sensorHealthy = false;
+
+// --- System State & LED Diagnostic Codes ---
+enum SystemState {
+  STATE_OK,                 // Solid ON: Normal operation (WiFi connected & sensor healthy)
+  STATE_CONNECTING_WIFI,    // Fast Blink (100ms ON / 100ms OFF): Boot / Connecting to network
+  STATE_WIFI_LOST,          // Slow Blink (500ms ON / 500ms OFF): Disconnected from WiFi
+  STATE_SENSOR_FAULT,       // Double Flash (* * ___): SHT30 I2C communication failure
+  STATE_OTA_UPDATING        // Rapid Strobe (50ms ON / 50ms OFF): Flashing firmware over OTA
+};
+
+SystemState currentState = STATE_CONNECTING_WIFI;
 
 // Track last sent values to avoid unnecessary network transmissions
 float lastTemp = -999.0f;
@@ -60,6 +72,60 @@ float lastAbsHum = -999.0f;
 float lastHeatIndex = -999.0f;
 float lastVpd = -999.0f;
 int lastMoldRisk = -1; // -1 = uninitialized, 0 = false, 1 = true
+
+// --- LED Diagnostic Controller ---
+
+/**
+ * Controls the physical built-in LED.
+ * On Wemos D1 Mini / ESP8266, the LED is Active-LOW:
+ *   LOW  = LED ON
+ *   HIGH = LED OFF
+ */
+void setLedHardware(bool on) {
+  digitalWrite(LED_BUILTIN, on ? LOW : HIGH);
+}
+
+/**
+ * Non-blocking LED update routine called continuously in loop().
+ * Generates distinct blink/strobe patterns using millis().
+ */
+void updateLed() {
+  unsigned long now = millis();
+
+  switch (currentState) {
+    case STATE_OK:
+      // Solid ON: Everything connected and operating normally
+      setLedHardware(true);
+      break;
+
+    case STATE_CONNECTING_WIFI:
+      // Fast Blink: 100ms ON / 100ms OFF
+      setLedHardware((now / 100) % 2 == 0);
+      break;
+
+    case STATE_WIFI_LOST:
+      // Slow Blink: 500ms ON / 500ms OFF
+      setLedHardware((now / 500) % 2 == 0);
+      break;
+
+    case STATE_SENSOR_FAULT:
+      // Double Flash Pattern: [ON 100ms, OFF 100ms, ON 100ms, OFF 700ms] (1 second cycle)
+      {
+        unsigned long phase = now % 1000;
+        if (phase < 100 || (phase >= 200 && phase < 300)) {
+          setLedHardware(true);
+        } else {
+          setLedHardware(false);
+        }
+      }
+      break;
+
+    case STATE_OTA_UPDATING:
+      // Rapid Strobe: 50ms ON / 50ms OFF
+      setLedHardware((now / 50) % 2 == 0);
+      break;
+  }
+}
 
 // --- Psychrometric Calculation Helpers ---
 
@@ -138,6 +204,8 @@ void setupWiFi() {
   // Wait for connection
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED) {
+    currentState = STATE_CONNECTING_WIFI;
+    updateLed();
     delay(500);
     Serial.print(".");
     attempts++;
@@ -179,6 +247,7 @@ void setupOTA() {
   #endif
 
   ArduinoOTA.onStart([]() {
+    currentState = STATE_OTA_UPDATING;
     String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
     Serial.println("\n[OTA] Start updating " + type);
   });
@@ -188,6 +257,7 @@ void setupOTA() {
   });
 
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    updateLed();
     Serial.printf("[OTA] Progress: %u%%\r", (progress / (total / 100)));
   });
 
@@ -205,6 +275,11 @@ void setupOTA() {
 }
 
 void setup() {
+  // Configure Built-in Status LED (Active-LOW on Wemos D1 Mini)
+  pinMode(LED_BUILTIN, OUTPUT);
+  currentState = STATE_CONNECTING_WIFI;
+  updateLed();
+
   // Start Serial communication for debugging
   Serial.begin(115200);
   delay(100);
@@ -241,8 +316,10 @@ void setup() {
   // Initialize I2C and SHT30 Sensor
   Wire.begin();
   if (!sht30.begin(0x45)) {
+    sensorHealthy = false;
     Serial.println("ERROR: SHT30 sensor shield not found at address 0x45!");
   } else {
+    sensorHealthy = true;
     Serial.println("SHT30 sensor successfully initialized.");
   }
   
@@ -250,6 +327,18 @@ void setup() {
 }
 
 void loop() {
+  // Dynamically evaluate overall system state & update LED diagnostics
+  if (currentState != STATE_OTA_UPDATING) {
+    if (WiFi.status() != WL_CONNECTED) {
+      currentState = STATE_WIFI_LOST;
+    } else if (!sensorHealthy) {
+      currentState = STATE_SENSOR_FAULT;
+    } else {
+      currentState = STATE_OK;
+    }
+  }
+  updateLed();
+
   // Keep mDNS service updated
   MDNS.update();
 
@@ -278,6 +367,8 @@ void readAndReportSensor() {
 
   // Check if readings are valid (not NaN)
   if (!isnan(temp) && !isnan(hum)) {
+    sensorHealthy = true;
+
     // Calculate derived environmental metrics
     float dewPoint = calculateDewPoint(temp, hum);
     float absHum = calculateAbsoluteHumidity(temp, hum);
@@ -338,6 +429,7 @@ void readAndReportSensor() {
       lastVpd = vpd;
     }
   } else {
+    sensorHealthy = false;
     Serial.println("ERROR: Failed to read from SHT30 sensor shield!");
   }
 }

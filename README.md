@@ -26,6 +26,20 @@ This project is an advanced environmental sensor node built using a **Wemos D1 M
 
 ---
 
+## Visual LED Status & Diagnostics
+
+The Wemos D1 Mini built-in LED indicates real-time operational status without needing serial output:
+
+| LED Pattern | Timing / Rhythm | Status / Fault Meaning | Action Required |
+| :--- | :--- | :--- | :--- |
+| **Solid ON** | Continuous lit | **All OK** (WiFi connected, SHT30 sensor healthy) | None (Normal operation) |
+| **Fast Blink** | 100ms ON / 100ms OFF | **Connecting / Booting** | Waiting for network connection |
+| **Slow Blink** | 500ms ON / 500ms OFF | **WiFi Lost / Disconnected** | Check router / WiFi credentials in `secrets.h` |
+| **Double Flash** | `* * ___ * * ___` (2 quick pulses) | **Sensor Fault** (I2C read failure / NaN) | Check SHT30 shield connection (pins D1/D2) |
+| **Rapid Strobe** | 50ms ON / 50ms OFF | **OTA Update in Progress** | Do not power off device |
+
+---
+
 ## Smart Home Use Cases & Flow Ideas
 
 1. **Intelligent Bathroom Fan Control (Absolute Humidity)**
