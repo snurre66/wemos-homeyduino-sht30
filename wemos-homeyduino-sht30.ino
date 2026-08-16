@@ -14,10 +14,12 @@
  * Capabilities Reported to Homey Device Card:
  * 1. measure_temperature           - Ambient Temperature (°C)
  * 2. measure_humidity              - Relative Humidity (%)
- * 3. alarm_generic                 - Mold / High Humidity Condensation Alert
+ * 3. alarm_generic                 - Mold Risk Alert (RH >= 70%)
+ * 4. alarm_water                   - Condensation Risk Alert (Temp - DewPoint <= 2.0°C)
  * 
  * Flow Triggers with Tag Values:
  * - dew_point                      - Calculated Dew Point (°C)
+ * - dew_point_spread               - Temperature Margin Above Dew Point (°C)
  * - absolute_humidity              - Absolute Humidity (g/m³)
  * - heat_index                     - Heat Index / Apparent "Feels Like" Temp (°C)
  * - vpd                            - Vapor Pressure Deficit (kPa)
@@ -47,6 +49,7 @@
 // --- Configuration ---
 const char* deviceName = "Wemos-SHT30-Sensor";
 const unsigned long MEASURE_INTERVAL = 15000; // Measurement interval in milliseconds (15 seconds)
+const float CONDENSATION_TEMP_MARGIN = 2.0f;  // Temperature margin in °C (alert if Temp - DewPoint <= 2.0°C)
 
 // --- Globals ---
 Adafruit_SHT31 sht30 = Adafruit_SHT31();
@@ -68,10 +71,12 @@ SystemState currentState = STATE_CONNECTING_WIFI;
 float lastTemp = -999.0f;
 float lastHum = -999.0f;
 float lastDewPoint = -999.0f;
+float lastDewPointSpread = -999.0f;
 float lastAbsHum = -999.0f;
 float lastHeatIndex = -999.0f;
 float lastVpd = -999.0f;
-int lastMoldRisk = -1; // -1 = uninitialized, 0 = false, 1 = true
+int lastMoldRisk = -1;         // -1 = uninitialized, 0 = false, 1 = true
+int lastCondensationRisk = -1; // -1 = uninitialized, 0 = false, 1 = true
 
 // --- LED Diagnostic Controller ---
 
@@ -301,14 +306,17 @@ void setup() {
   // Register only standard Athom Homey capabilities (custom IDs cause Homey pairing to fail)
   Homey.addCapability("measure_temperature");
   Homey.addCapability("measure_humidity");
-  Homey.addCapability("alarm_generic"); // Mold / Condensation Risk Alert
+  Homey.addCapability("alarm_generic"); // Mold Risk Alert (>70% RH)
+  Homey.addCapability("alarm_water");   // Condensation Risk Alert (Temp approaches Dew Point)
   
   Serial.println("Capabilities registered:");
   Serial.println(" - measure_temperature (Temp °C)");
   Serial.println(" - measure_humidity (Rel Hum %)");
   Serial.println(" - alarm_generic (Mold Risk Alert)");
+  Serial.println(" - alarm_water (Condensation Alert)");
   Serial.println("Triggers enabled for Homey Flows:");
   Serial.println(" - dew_point (tag: °C)");
+  Serial.println(" - dew_point_spread (tag: °C)");
   Serial.println(" - absolute_humidity (tag: g/m³)");
   Serial.println(" - heat_index (tag: °C)");
   Serial.println(" - vpd (tag: kPa)");
@@ -371,20 +379,24 @@ void readAndReportSensor() {
 
     // Calculate derived environmental metrics
     float dewPoint = calculateDewPoint(temp, hum);
+    float dewPointSpread = temp - dewPoint; // Temperature delta above dew point
     float absHum = calculateAbsoluteHumidity(temp, hum);
     float heatIndex = calculateHeatIndex(temp, hum);
     float vpd = calculateVPD(temp, hum);
     bool moldRisk = (hum >= 70.0f); // High humidity favorable for mold growth
+    bool condensationRisk = (dewPointSpread <= CONDENSATION_TEMP_MARGIN); // Temp near dew point
 
     // Print all readings to Serial Monitor
     Serial.println();
-    Serial.print("  ├─ Temp:          "); Serial.print(temp, 1); Serial.println(" °C");
-    Serial.print("  ├─ Rel Humidity:  "); Serial.print(hum, 1); Serial.println(" %");
-    Serial.print("  ├─ Dew Point:     "); Serial.print(dewPoint, 1); Serial.println(" °C");
-    Serial.print("  ├─ Abs Humidity:  "); Serial.print(absHum, 2); Serial.println(" g/m³");
-    Serial.print("  ├─ Feels Like:    "); Serial.print(heatIndex, 1); Serial.println(" °C");
-    Serial.print("  ├─ VPD:           "); Serial.print(vpd, 2); Serial.println(" kPa");
-    Serial.print("  └─ Mold Risk:     "); Serial.println(moldRisk ? "ALERT (>70% RH)" : "OK");
+    Serial.print("  ├─ Temp:             "); Serial.print(temp, 1); Serial.println(" °C");
+    Serial.print("  ├─ Rel Humidity:     "); Serial.print(hum, 1); Serial.println(" %");
+    Serial.print("  ├─ Dew Point:        "); Serial.print(dewPoint, 1); Serial.println(" °C");
+    Serial.print("  ├─ Dew Point Spread: "); Serial.print(dewPointSpread, 1); Serial.println(" °C");
+    Serial.print("  ├─ Abs Humidity:     "); Serial.print(absHum, 2); Serial.println(" g/m³");
+    Serial.print("  ├─ Feels Like:       "); Serial.print(heatIndex, 1); Serial.println(" °C");
+    Serial.print("  ├─ VPD:              "); Serial.print(vpd, 2); Serial.println(" kPa");
+    Serial.print("  ├─ Mold Risk:        "); Serial.println(moldRisk ? "ALERT (>70% RH)" : "OK");
+    Serial.print("  └─ Condensation:     "); Serial.println(condensationRisk ? "ALERT (Temp <= DewPoint + 2°C)" : "OK");
 
     // Report standard capabilities to Homey
     // 1. Temperature (°C)
@@ -408,10 +420,22 @@ void readAndReportSensor() {
       }
     }
 
+    // 4. Condensation Risk Alert (alarm_water)
+    if (lastCondensationRisk == -1 || ((lastCondensationRisk == 1) != condensationRisk)) {
+      if (Homey.setCapabilityValue("alarm_water", condensationRisk)) {
+        lastCondensationRisk = condensationRisk ? 1 : 0;
+      }
+    }
+
     // Emit Flow Triggers with tag values for Homey Flows
     if (abs(dewPoint - lastDewPoint) >= 0.1f || lastDewPoint == -999.0f) {
       Homey.trigger("dew_point", dewPoint);
       lastDewPoint = dewPoint;
+    }
+
+    if (abs(dewPointSpread - lastDewPointSpread) >= 0.1f || lastDewPointSpread == -999.0f) {
+      Homey.trigger("dew_point_spread", dewPointSpread);
+      lastDewPointSpread = dewPointSpread;
     }
 
     if (abs(absHum - lastAbsHum) >= 0.1f || lastAbsHum == -999.0f) {

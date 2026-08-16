@@ -18,11 +18,15 @@ This project is an advanced environmental sensor node built using a **Wemos D1 M
 | :--- | :--- | :--- | :--- | :--- |
 | `measure_temperature` | Temperature | °C | Number | Ambient dry-bulb temperature measured by SHT30 |
 | `measure_humidity` | Relative Humidity | % | Number | Relative humidity measured by SHT30 |
-| `measure_dew_point` | Dew Point | °C | Number | Temperature at which air reaches water vapor saturation and condenses |
-| `measure_humidity.absolute` | Absolute Humidity | $\text{g/m}^3$ | Number | Physical mass of water vapor per cubic meter of air |
-| `measure_temperature.feels_like`| Feels Like | °C | Number | Heat index / perceived apparent temperature |
-| `measure_vpd` | Vapor Pressure Deficit | kPa | Number | Difference between saturated and actual vapor pressure (plant growth / drying) |
 | `alarm_generic` | Mold Risk Alert | — | Boolean | Triggers when RH $\ge 70\%$, indicating conditions favoring mold |
+| `alarm_water` | Condensation Risk Alert | — | Boolean | Triggers when $T - T_{\text{dew}} \le 2.0^\circ\text{C}$ (air near saturation) |
+
+### Flow Triggers (Homey Flows)
+- `dew_point`: Real-time dew point temperature (°C)
+- `dew_point_spread`: Margin between ambient temperature and dew point ($T - T_{\text{dew}}$ in °C)
+- `absolute_humidity`: Actual mass of water vapor ($\text{g/m}^3$)
+- `heat_index`: Perceived apparent "feels like" temperature (°C)
+- `vpd`: Vapor Pressure Deficit (kPa)
 
 ---
 
