@@ -27,6 +27,8 @@ This project is an advanced environmental sensor node built using a **Wemos D1 M
 - `absolute_humidity`: Actual mass of water vapor ($\text{g/m}^3$)
 - `heat_index`: Perceived apparent "feels like" temperature (°C)
 - `vpd`: Vapor Pressure Deficit (kPa)
+- `freeze_risk`: Boolean state tag (true/false) when $T \le 3.0^\circ\text{C}$
+- `frost_alert`: Event trigger emitted when temperature drops into freezing danger zone ($T \le 3.0^\circ\text{C}$)
 
 ---
 
@@ -48,11 +50,13 @@ The Wemos D1 Mini built-in LED indicates real-time operational status without ne
 
 1. **Intelligent Bathroom Fan Control (Absolute Humidity)**
    - *Flow*: IF `Absolute Humidity` rises $> 3\,\text{g/m}^3$ above normal room baseline, THEN turn on exhaust fan. Turn off when absolute humidity returns to baseline. (Avoids false triggers caused by winter temperature drops).
-2. **Window Condensation Prevention (Dew Point)**
-   - *Flow*: IF `Dew Point` is higher than the outside window glass surface temperature, THEN send a notification to ventilate or lower humidifier output.
-3. **Plant Care / Greenhouse Climate (VPD)**
+2. **Window Condensation Prevention (Dew Point / Condensation Alert)**
+   - *Flow*: IF `Condensation Risk Alert` turns ON (or `Dew Point Spread` $\le 2.0^\circ\text{C}$), THEN send a notification to ventilate or lower humidifier output.
+3. **Frost & Pipe Burst Protection (Freeze Risk / Frost Alert)**
+   - *Flow*: IF `Frost Alert` triggers (or `Freeze Risk` is TRUE), THEN activate pipe heating cable / frost guard heater in cabin or garage and send urgent push notification.
+4. **Plant Care / Greenhouse Climate (VPD)**
    - *Flow*: Maintain optimal VPD between $0.8 - 1.2\,\text{kPa}$ for vegetative growth by modulating misting humidifiers or ventilation fans.
-4. **Mold & Mildew Prevention (Mold Risk Alert)**
+5. **Mold & Mildew Prevention (Mold Risk Alert)**
    - *Flow*: IF `Mold Risk Alert` turns ON for $> 2$ hours, THEN turn on dehumidifier and alert homeowner.
 
 ---

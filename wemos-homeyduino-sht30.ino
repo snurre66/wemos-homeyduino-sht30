@@ -23,6 +23,8 @@
  * - absolute_humidity              - Absolute Humidity (g/m³)
  * - heat_index                     - Heat Index / Apparent "Feels Like" Temp (°C)
  * - vpd                            - Vapor Pressure Deficit (kPa)
+ * - freeze_risk                    - Freezing Risk State (boolean: true/false)
+ * - frost_alert                    - Frost/Freeze Trigger Event (Temp °C)
 
  * 
  * Dependencies (install via Arduino Library Manager):
@@ -50,6 +52,7 @@
 const char* deviceName = "Wemos-SHT30-Sensor";
 const unsigned long MEASURE_INTERVAL = 15000; // Measurement interval in milliseconds (15 seconds)
 const float CONDENSATION_TEMP_MARGIN = 2.0f;  // Temperature margin in °C (alert if Temp - DewPoint <= 2.0°C)
+const float FREEZE_ALERT_TEMP = 3.0f;         // Temperature in °C for early freezing / frost risk alert
 
 // --- Globals ---
 Adafruit_SHT31 sht30 = Adafruit_SHT31();
@@ -77,6 +80,7 @@ float lastHeatIndex = -999.0f;
 float lastVpd = -999.0f;
 int lastMoldRisk = -1;         // -1 = uninitialized, 0 = false, 1 = true
 int lastCondensationRisk = -1; // -1 = uninitialized, 0 = false, 1 = true
+int lastFreezeRisk = -1;       // -1 = uninitialized, 0 = false, 1 = true
 
 // --- LED Diagnostic Controller ---
 
@@ -320,6 +324,8 @@ void setup() {
   Serial.println(" - absolute_humidity (tag: g/m³)");
   Serial.println(" - heat_index (tag: °C)");
   Serial.println(" - vpd (tag: kPa)");
+  Serial.println(" - freeze_risk (boolean tag)");
+  Serial.println(" - frost_alert (temp tag: °C)");
 
   // Initialize I2C and SHT30 Sensor
   Wire.begin();
@@ -385,6 +391,7 @@ void readAndReportSensor() {
     float vpd = calculateVPD(temp, hum);
     bool moldRisk = (hum >= 70.0f); // High humidity favorable for mold growth
     bool condensationRisk = (dewPointSpread <= CONDENSATION_TEMP_MARGIN); // Temp near dew point
+    bool freezeRisk = (temp <= FREEZE_ALERT_TEMP); // Freezing / Frost early warning
 
     // Print all readings to Serial Monitor
     Serial.println();
@@ -396,7 +403,8 @@ void readAndReportSensor() {
     Serial.print("  ├─ Feels Like:       "); Serial.print(heatIndex, 1); Serial.println(" °C");
     Serial.print("  ├─ VPD:              "); Serial.print(vpd, 2); Serial.println(" kPa");
     Serial.print("  ├─ Mold Risk:        "); Serial.println(moldRisk ? "ALERT (>70% RH)" : "OK");
-    Serial.print("  └─ Condensation:     "); Serial.println(condensationRisk ? "ALERT (Temp <= DewPoint + 2°C)" : "OK");
+    Serial.print("  ├─ Condensation:     "); Serial.println(condensationRisk ? "ALERT (Temp <= DewPoint + 2°C)" : "OK");
+    Serial.print("  └─ Freezing Risk:    "); Serial.println(freezeRisk ? "ALERT (Temp <= 3°C)" : "OK");
 
     // Report standard capabilities to Homey
     // 1. Temperature (°C)
@@ -425,6 +433,15 @@ void readAndReportSensor() {
       if (Homey.setCapabilityValue("alarm_water", condensationRisk)) {
         lastCondensationRisk = condensationRisk ? 1 : 0;
       }
+    }
+
+    // 5. Freezing / Frost Risk Triggers
+    if (lastFreezeRisk == -1 || ((lastFreezeRisk == 1) != freezeRisk)) {
+      Homey.trigger("freeze_risk", freezeRisk);
+      if (freezeRisk) {
+        Homey.trigger("frost_alert", temp);
+      }
+      lastFreezeRisk = freezeRisk ? 1 : 0;
     }
 
     // Emit Flow Triggers with tag values for Homey Flows
