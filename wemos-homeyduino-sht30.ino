@@ -14,7 +14,7 @@
  * Capabilities Reported to Homey Device Card:
  * 1. measure_temperature           - Ambient Temperature (°C)
  * 2. measure_humidity              - Relative Humidity (%)
- * 3. alarm_generic                 - Mold Risk Alert (RH >= 70%)
+ * 3. alarm_generic.mold            - Mold Risk Alert (RH >= 70%)
  * 4. alarm_water                   - Condensation Risk Alert (Temp - DewPoint <= 2.0°C)
  * 5. alarm_generic.freeze          - Freezing / Frost Risk Alert (Temp <= 3.0°C)
  * 
@@ -311,14 +311,14 @@ void setup() {
   // Register Homey capabilities (standard IDs and sub-capabilities)
   Homey.addCapability("measure_temperature");
   Homey.addCapability("measure_humidity");
-  Homey.addCapability("alarm_generic");        // Mold Risk Alert (RH >= 70%)
+  Homey.addCapability("alarm_generic.mold");   // Mold Risk Alert (RH >= 70%)
   Homey.addCapability("alarm_water");          // Condensation Risk Alert (Temp approaches Dew Point)
   Homey.addCapability("alarm_generic.freeze"); // Freezing / Frost Risk Alert (Temp <= 3.0°C)
   
   Serial.println("Capabilities registered:");
   Serial.println(" - measure_temperature (Temp °C)");
   Serial.println(" - measure_humidity (Rel Hum %)");
-  Serial.println(" - alarm_generic (Mold Risk Alert)");
+  Serial.println(" - alarm_generic.mold (Mold Risk Alert)");
   Serial.println(" - alarm_water (Condensation Alert)");
   Serial.println(" - alarm_generic.freeze (Freeze Risk Alert)");
   Serial.println("Triggers enabled for Homey Flows:");
@@ -424,9 +424,9 @@ void readAndReportSensor() {
       }
     }
 
-    // 3. Mold Risk Alert (alarm_generic)
+    // 3. Mold Risk Alert (alarm_generic.mold)
     if (lastMoldRisk == -1 || ((lastMoldRisk == 1) != moldRisk)) {
-      if (Homey.setCapabilityValue("alarm_generic", moldRisk)) {
+      if (Homey.setCapabilityValue("alarm_generic.mold", moldRisk)) {
         lastMoldRisk = moldRisk ? 1 : 0;
       }
     }

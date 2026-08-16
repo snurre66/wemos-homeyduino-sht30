@@ -18,7 +18,7 @@ This project is an advanced environmental sensor node built using a **Wemos D1 M
 | :--- | :--- | :--- | :--- | :--- |
 | `measure_temperature` | Temperature | °C | Number | Ambient dry-bulb temperature measured by SHT30 |
 | `measure_humidity` | Relative Humidity | % | Number | Relative humidity measured by SHT30 |
-| `alarm_generic` | Mold Risk Alert | — | Boolean | Triggers when RH $\ge 70\%$, indicating conditions favoring mold |
+| `alarm_generic.mold` | Mold Risk Alert | — | Boolean | Triggers when RH $\ge 70\%$, indicating conditions favoring mold |
 | `alarm_water` | Condensation Risk Alert | — | Boolean | Triggers when $T - T_{\text{dew}} \le 2.0^\circ\text{C}$ (air near saturation) |
 | `alarm_generic.freeze` | Freezing / Frost Alert | — | Boolean | Triggers when $T \le 3.0^\circ\text{C}$ (frost / pipe freeze warning) |
 
