@@ -119,9 +119,9 @@ To configure your credentials:
 Once the sketch is uploaded over USB once and connected to your WiFi:
 1. Open the Arduino IDE on the same WiFi network.
 2. Go to **Tools > Port**.
-3. Under **Network Ports**, you will see:
+3. Under **Network Ports**, you will see your specific device (each board automatically appends its unique hardware chip ID):
    ```text
-   Wemos-SHT30-Sensor at 192.168.x.x
+   Wemos-SHT30-1A2B at 192.168.x.x
    ```
 4. Select that network port and click **Upload**!
 5. The firmware will flash wirelessly over WiFi without needing to plug the device into your PC.
@@ -131,7 +131,8 @@ Once the sketch is uploaded over USB once and connected to your WiFi:
 ## Pairing / Updating in Homey
 - **If adding as a new device**:
   1. Open the **Homey App** > **Devices** > **+** > search for **Homeyduino**.
-  2. Select **Homeyduino** and choose `Wemos-SHT30-Sensor`.
+  2. Select **Homeyduino** and choose your sensor (e.g., `Wemos-SHT30-1A2B`).
+  3. Once paired, you can rename the device in Homey to the room it is placed in (e.g. *"Bathroom"*, *"Greenhouse"*, *"Master Bedroom"*).
 - **If already paired**:
   - Restart the device or trigger a capability sync in the Homeyduino app on Homey so Homey retrieves the newly registered capabilities.
 

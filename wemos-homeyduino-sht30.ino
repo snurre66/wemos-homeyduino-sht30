@@ -50,7 +50,8 @@
 #include "secrets.h"
 
 // --- Configuration ---
-const char* deviceName = "Wemos-SHT30-Sensor";
+const char* BASE_DEVICE_NAME = "Wemos-SHT30";
+char deviceName[32];                          // Unique hostname populated at boot (e.g. "Wemos-SHT30-1A2B")
 const unsigned long MEASURE_INTERVAL = 15000; // Measurement interval in milliseconds (15 seconds)
 const float CONDENSATION_TEMP_MARGIN = 2.0f;  // Temperature margin in °C (alert if Temp - DewPoint <= 2.0°C)
 const float FREEZE_ALERT_TEMP = 3.0f;         // Temperature in °C for early freezing / frost risk alert
@@ -285,6 +286,10 @@ void setupOTA() {
 }
 
 void setup() {
+  // Generate unique device name using the ESP8266 hardware Chip ID
+  uint32_t chipId = ESP.getChipId();
+  snprintf(deviceName, sizeof(deviceName), "%s-%04X", BASE_DEVICE_NAME, (uint16_t)(chipId & 0xFFFF));
+
   // Configure Built-in Status LED (Active-LOW on Wemos D1 Mini)
   pinMode(LED_BUILTIN, OUTPUT);
   currentState = STATE_CONNECTING_WIFI;
@@ -294,6 +299,8 @@ void setup() {
   Serial.begin(115200);
   delay(100);
   Serial.println("\n=== Wemos D1 Mini SHT30 Shield Setup ===");
+  Serial.print("Device Hostname / ID: ");
+  Serial.println(deviceName);
 
   // Connect to WiFi
   setupWiFi();
