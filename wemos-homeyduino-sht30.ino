@@ -9,6 +9,7 @@
  * Features:
  * - Real-time temperature & humidity monitoring with psychrometric derivations
  * - Comprehensive hardware, network, and memory diagnostics
+ * - Distinct, standard Homey alarm capabilities with functional names
  * - Remote maintenance actions triggered from Homey Flows (Reboot, Reset Stats)
  * - Over-The-Air (OTA) wireless flashing support via Arduino IDE
  * - Non-blocking timing loop
@@ -18,10 +19,9 @@
  * 2. measure_humidity              - Relative Humidity (%)
  * 3. measure_signal_strength       - WiFi Signal Strength RSSI (dBm)
  * 4. measure_voltage               - Internal Supply Rail Voltage Vcc (V)
- * 5. alarm_generic.mold            - Mold Risk Alert (RH >= 70%)
- * 6. alarm_water                   - Condensation Risk Alert (Temp - DewPoint <= 2.0°C)
- * 7. alarm_generic.freeze          - Freezing / Frost Risk Alert (Temp <= 3.0°C)
- * 8. alarm_generic.sensor          - SHT30 I2C Sensor Hardware Fault Alert
+ * 5. alarm_water                   - Vannalarm: Condensation Risk Alert (Temp - DewPoint <= 2.0°C)
+ * 6. alarm_generic                 - Generell alarm: Mold Risk Alert (RH >= 70%)
+ * 7. alarm_tamper                  - Sabotasjealarm: SHT30 I2C Sensor Hardware Fault Alert
  * 
  * Flow Triggers with Tag Values:
  * - dew_point                      - Calculated Dew Point (°C)
@@ -29,8 +29,8 @@
  * - absolute_humidity              - Absolute Humidity (g/m³)
  * - heat_index                     - Heat Index / Apparent "Feels Like" Temp (°C)
  * - vpd                            - Vapor Pressure Deficit (kPa)
- * - freeze_risk                    - Freezing Risk State (boolean: true/false)
- * - frost_alert                    - Frost/Freeze Trigger Event (Temp °C)
+ * - freeze_risk                    - Freezing Risk State (boolean tag: true/false)
+ * - frost_alert                    - Frost/Freeze Trigger Event (Temp tag: °C)
  * - device_booted                  - Emitted on boot/reconnect (Reset Reason tag)
  * - diagnostics_heap               - Free RAM Heap (KB tag)
  * - diagnostics_uptime             - System Uptime (Hours tag)
@@ -370,32 +370,30 @@ void setup() {
   Serial.println("Initializing Homeyduino...");
   Homey.begin(deviceName);
 
-  // Register Homey capabilities
-  Homey.addCapability("measure_temperature");       // Ambient Temp (°C)
+  // Register Homey capabilities (using distinct standard types for clear Homey UI names)
+  Homey.addCapability("measure_temperature");       // Temperature (°C)
   Homey.addCapability("measure_humidity");          // Relative Humidity (%)
   Homey.addCapability("measure_signal_strength");   // WiFi Signal Strength (dBm)
   Homey.addCapability("measure_voltage");           // ESP8266 Internal Vcc Rail (V)
-  Homey.addCapability("alarm_generic.mold");        // Mold Risk Alert (RH >= 70%)
-  Homey.addCapability("alarm_water");               // Condensation Risk Alert
-  Homey.addCapability("alarm_generic.freeze");      // Freezing / Frost Risk Alert
-  Homey.addCapability("alarm_generic.sensor");      // Sensor Hardware Fault Alert
+  Homey.addCapability("alarm_water");               // Homey UI: "Vannalarm" -> Condensation Risk
+  Homey.addCapability("alarm_generic");             // Homey UI: "Generell alarm" -> Mold Risk
+  Homey.addCapability("alarm_tamper");              // Homey UI: "Sabotasjealarm" -> SHT30 Hardware/I2C Fault
 
   // Register Homey Flow Actions ("THEN" cards)
   Homey.addAction("reboot", handleRemoteReboot);
   Homey.addAction("reset_stats", handleResetStats);
   
   Serial.println("Capabilities registered on Homey Device Tile:");
-  Serial.println(" - measure_temperature (Temp °C)");
-  Serial.println(" - measure_humidity (Rel Hum %)");
-  Serial.println(" - measure_signal_strength (WiFi RSSI dBm)");
-  Serial.println(" - measure_voltage (ESP8266 Vcc V)");
-  Serial.println(" - alarm_generic.mold (Mold Risk)");
-  Serial.println(" - alarm_water (Condensation Risk)");
-  Serial.println(" - alarm_generic.freeze (Freeze Risk)");
-  Serial.println(" - alarm_generic.sensor (Sensor Fault)");
+  Serial.println(" - measure_temperature    (Ambient Temp °C)");
+  Serial.println(" - measure_humidity       (Rel Humidity %)");
+  Serial.println(" - measure_signal_strength(WiFi RSSI dBm)");
+  Serial.println(" - measure_voltage        (ESP8266 Vcc V)");
+  Serial.println(" - alarm_water            (Vannalarm: Condensation Risk)");
+  Serial.println(" - alarm_generic          (Generell alarm: Mold Risk)");
+  Serial.println(" - alarm_tamper           (Sabotasjealarm: SHT30 Sensor Fault)");
   Serial.println("Actions registered for Homey Flows:");
-  Serial.println(" - reboot (Remote ESP8266 restart)");
-  Serial.println(" - reset_stats (Clear error/reconnect counters)");
+  Serial.println(" - reboot                 (Remote ESP8266 restart)");
+  Serial.println(" - reset_stats            (Clear error/reconnect counters)");
 
   // Initialize I2C and SHT30 Sensor
   Wire.begin();
@@ -519,31 +517,32 @@ void readAndReportSensor() {
       }
     }
 
-    if (lastMoldRisk == -1 || ((lastMoldRisk == 1) != moldRisk)) {
-      if (Homey.setCapabilityValue("alarm_generic.mold", moldRisk)) {
-        lastMoldRisk = moldRisk ? 1 : 0;
-      }
-    }
-
+    // 1. Condensation Risk (alarm_water -> Homey UI: "Vannalarm")
     if (lastCondensationRisk == -1 || ((lastCondensationRisk == 1) != condensationRisk)) {
       if (Homey.setCapabilityValue("alarm_water", condensationRisk)) {
         lastCondensationRisk = condensationRisk ? 1 : 0;
       }
     }
 
-    if (lastFreezeRisk == -1 || ((lastFreezeRisk == 1) != freezeRisk)) {
-      if (Homey.setCapabilityValue("alarm_generic.freeze", freezeRisk)) {
-        lastFreezeRisk = freezeRisk ? 1 : 0;
+    // 2. Mold Risk (alarm_generic -> Homey UI: "Generell alarm")
+    if (lastMoldRisk == -1 || ((lastMoldRisk == 1) != moldRisk)) {
+      if (Homey.setCapabilityValue("alarm_generic", moldRisk)) {
+        lastMoldRisk = moldRisk ? 1 : 0;
       }
+    }
+
+    // 3. Freezing / Frost Risk (Homey Flow Triggers)
+    if (lastFreezeRisk == -1 || ((lastFreezeRisk == 1) != freezeRisk)) {
+      lastFreezeRisk = freezeRisk ? 1 : 0;
       Homey.trigger("freeze_risk", freezeRisk);
       if (freezeRisk) {
         Homey.trigger("frost_alert", temp);
       }
     }
 
-    // Reset sensor fault alarm if it was previously set
+    // 4. Sensor Fault (alarm_tamper -> Homey UI: "Sabotasjealarm")
     if (lastSensorFault != 0) {
-      if (Homey.setCapabilityValue("alarm_generic.sensor", false)) {
+      if (Homey.setCapabilityValue("alarm_tamper", false)) {
         lastSensorFault = 0;
       }
     }
@@ -579,7 +578,7 @@ void readAndReportSensor() {
     Serial.println("ERROR: Failed to read from SHT30 sensor shield!");
 
     if (lastSensorFault != 1) {
-      if (Homey.setCapabilityValue("alarm_generic.sensor", true)) {
+      if (Homey.setCapabilityValue("alarm_tamper", true)) {
         lastSensorFault = 1;
       }
     }
