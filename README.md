@@ -1,28 +1,39 @@
-# Wemos D1 Mini SHT30 Homeyduino Sensor
+# Wemos D1 Mini SHT30 Homeyduino Sensor & Diagnostics Node
 
-This project is an advanced environmental sensor node built using a **Wemos D1 Mini (ESP8266)** and an **SHT30 Shield**. It uses the **Homeyduino** library to seamlessly report both raw measurements and psychrometric derived metrics to an **Athom Homey** smart home gateway.
+This project is an advanced environmental sensor and diagnostics node built using a **Wemos D1 Mini (ESP8266)** and an **SHT30 Shield**. It uses the **Homeyduino** library to seamlessly report raw measurements, psychrometric climate derivations, system/network health diagnostics, and remote maintenance actions to an **Athom Homey** smart home gateway.
 
 ## Features
-- **Real-time Monitoring:** Reads temperature and humidity from the I2C-based SHT30 sensor shield (address `0x45`).
-- **Psycho-Climatic Calculations:** Automatically calculates dew point, absolute humidity, heat index ("feels like"), vapor pressure deficit (VPD), and mold risk.
+- **Real-time Environmental Monitoring:** Reads temperature and humidity from the I2C-based SHT30 sensor shield (address `0x45`).
+- **Psycho-Climatic Calculations:** Automatically calculates dew point, absolute humidity, heat index ("feels like"), vapor pressure deficit (VPD), mold risk, and freezing risk.
+- **Hardware & Network Diagnostics:** Continuously monitors WiFi signal strength (RSSI), internal supply rail voltage ($V_{cc}$), free heap memory, fragmentation, and WiFi reconnect counters.
+- **Remote Maintenance Actions:** Supports Homey Flow "THEN" cards to remotely reboot the ESP8266 or reset diagnostic counters.
+- **Boot Notifications:** Emits a `device_booted` trigger to Homey on startup containing the reset reason (Power On, Watchdog, Exception).
 - **Homey Integration:** Connects directly to Homey over WiFi using the Homeyduino protocol.
 - **Serial Debugging:** Prints clear, structured tree diagnostics to the Serial Monitor (115200 baud).
-- **GitHub-Friendly Structure:** Keeps sensitive WiFi credentials private in a git-ignored `secrets.h` file, preventing accidental leaks.
-- **Non-blocking Timing:** Uses asynchronous `millis()` timing to avoid disrupting network socket loops.
+- **Over-The-Air (OTA) Updates:** Allows wireless firmware flashing directly from the Arduino IDE.
+- **GitHub-Friendly Structure:** Keeps sensitive WiFi credentials private in a git-ignored `secrets.h` file.
+- **Non-blocking Timing:** Uses asynchronous `millis()` timing loops (15s sensor / 60s diagnostics) to maintain network responsiveness.
 
 ---
 
-## Capabilities Reported to Homey
+## Capabilities Reported to Homey Device Tile
 
 | Capability ID | Display Name | Unit | Type | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | `measure_temperature` | Temperature | °C | Number | Ambient dry-bulb temperature measured by SHT30 |
 | `measure_humidity` | Relative Humidity | % | Number | Relative humidity measured by SHT30 |
+| `measure_signal_strength` | Signal Strength | dBm | Number | WiFi RSSI signal strength (e.g. `-65 dBm`) |
+| `measure_voltage` | Supply Voltage ($V_{cc}$) | V | Number | ESP8266 internal supply rail voltage (measured via `ADC_MODE(ADC_VCC)`) |
 | `alarm_generic.mold` | Mold Risk Alert | — | Boolean | Triggers when RH $\ge 70\%$, indicating conditions favoring mold |
 | `alarm_water` | Condensation Risk Alert | — | Boolean | Triggers when $T - T_{\text{dew}} \le 2.0^\circ\text{C}$ (air near saturation) |
 | `alarm_generic.freeze` | Freezing / Frost Alert | — | Boolean | Triggers when $T \le 3.0^\circ\text{C}$ (frost / pipe freeze warning) |
+| `alarm_generic.sensor` | Sensor Fault Alert | — | Boolean | Triggers when SHT30 I2C communication fails or reads invalid data |
 
-### Flow Triggers (Homey Flows)
+---
+
+## Flow Triggers & Tags (Homey Flows)
+
+### Environmental Triggers
 - `dew_point`: Real-time dew point temperature (°C)
 - `dew_point_spread`: Margin between ambient temperature and dew point ($T - T_{\text{dew}}$ in °C)
 - `absolute_humidity`: Actual mass of water vapor ($\text{g/m}^3$)
@@ -31,11 +42,25 @@ This project is an advanced environmental sensor node built using a **Wemos D1 M
 - `freeze_risk`: Boolean state tag (true/false) when $T \le 3.0^\circ\text{C}$
 - `frost_alert`: Event trigger emitted when temperature drops into freezing danger zone ($T \le 3.0^\circ\text{C}$)
 
+### Diagnostics & System Triggers
+- `device_booted`: Emitted once on boot/reconnect. Tag: `reset_reason` (e.g., *Power on*, *Hardware Watchdog*, *Exception*)
+- `diagnostics_heap`: Free RAM Heap (KB tag)
+- `diagnostics_uptime`: System Uptime (Hours tag)
+- `diagnostics_reconnects`: WiFi Reconnect Counter tag
+
+---
+
+## Remote Maintenance Actions (Homey Flow "THEN" Cards)
+
+You can trigger these actions directly from any Homey Flow "THEN" card:
+- **`reboot`**: Remotely reboots the Wemos D1 Mini board.
+- **`reset_stats`**: Clears the WiFi reconnect counter and I2C error counters.
+
 ---
 
 ## Visual LED Status & Diagnostics
 
-The Wemos D1 Mini built-in LED indicates real-time operational status without needing serial output:
+The Wemos D1 Mini built-in LED indicates real-time operational status:
 
 | LED Pattern | Timing / Rhythm | Status / Fault Meaning | Action Required |
 | :--- | :--- | :--- | :--- |
@@ -49,22 +74,22 @@ The Wemos D1 Mini built-in LED indicates real-time operational status without ne
 
 ## Smart Home Use Cases & Flow Ideas
 
-1. **Intelligent Bathroom Fan Control (Absolute Humidity)**
-   - *Flow*: IF `Absolute Humidity` rises $> 3\,\text{g/m}^3$ above normal room baseline, THEN turn on exhaust fan. Turn off when absolute humidity returns to baseline. (Avoids false triggers caused by winter temperature drops).
-2. **Window Condensation Prevention (Dew Point / Condensation Alert)**
-   - *Flow*: IF `Condensation Risk Alert` turns ON (or `Dew Point Spread` $\le 2.0^\circ\text{C}$), THEN send a notification to ventilate or lower humidifier output.
-3. **Frost & Pipe Burst Protection (Freeze Risk / Frost Alert)**
-   - *Flow*: IF `Frost Alert` triggers (or `Freeze Risk` is TRUE), THEN activate pipe heating cable / frost guard heater in cabin or garage and send urgent push notification.
-4. **Plant Care / Greenhouse Climate (VPD)**
-   - *Flow*: Maintain optimal VPD between $0.8 - 1.2\,\text{kPa}$ for vegetative growth by modulating misting humidifiers or ventilation fans.
-5. **Mold & Mildew Prevention (Mold Risk Alert)**
-   - *Flow*: IF `Mold Risk Alert` turns ON for $> 2$ hours, THEN turn on dehumidifier and alert homeowner.
+1. **Device Reboot & Health Monitoring**
+   - *Flow*: IF `alarm_generic.sensor` turns ON, THEN send push notification *"SHT30 sensor fault on Wemos"*, wait 1 minute, and execute action `reboot`.
+2. **Boot Notification & Power Outage Detection**
+   - *Flow*: WHEN `device_booted` triggers, THEN send notification *"Wemos Sensor restarted. Reason: {{reset_reason}}"*.
+3. **Intelligent Bathroom Fan Control (Absolute Humidity)**
+   - *Flow*: IF `Absolute Humidity` rises $> 3\,\text{g/m}^3$ above room baseline, THEN turn on exhaust fan.
+4. **Window Condensation Prevention (Dew Point / Condensation Alert)**
+   - *Flow*: IF `Condensation Risk Alert` turns ON, THEN send notification to ventilate.
+5. **Frost & Pipe Burst Protection (Freeze Risk / Frost Alert)**
+   - *Flow*: IF `Frost Alert` triggers, THEN activate pipe heating cable / frost guard heater.
 
 ---
 
 ## Hardware Requirements
 1. **Wemos D1 Mini** (or compatible ESP8266 board)
-2. **Wemos SHT30 Shield** (or any SHT30 sensor connected to `D1` / `SCL` and `D2` / `SDA`)
+2. **Wemos SHT30 Shield** (connected to `D1` / `SCL` and `D2` / `SDA`)
 3. Micro-USB cable (for programming and power)
 
 ---
@@ -72,30 +97,25 @@ The Wemos D1 Mini built-in LED indicates real-time operational status without ne
 ## Software Installation & Configuration
 
 ### 1. Arduino IDE Setup
-If you haven't already configured the Arduino IDE for ESP8266:
-1. Open the Arduino IDE.
-2. Go to **File > Preferences**.
-3. In **Additional Boards Manager URLs**, paste:
+1. Open Arduino IDE > **File > Preferences**.
+2. In **Additional Boards Manager URLs**, paste:
    ```text
    http://arduino.esp8266.com/stable/package_esp8266com_index.json
    ```
-4. Go to **Tools > Board > Boards Manager...**, search for `esp8266` by *ESP8266 Community*, and install the library.
-5. Select your board under **Tools > Board > ESP8266 Boards > LOLIN(WEMOS) D1 R2 & mini**.
+3. Go to **Tools > Board > Boards Manager...**, search for `esp8266` and install.
+4. Select board: **Tools > Board > ESP8266 Boards > LOLIN(WEMOS) D1 R2 & mini**.
 
 ### 2. Required Libraries
-Install the following libraries via **Tools > Manage Libraries...**:
+Install via **Tools > Manage Libraries...**:
 - **Homeyduino** (by Athom)
-- **Adafruit SHT31 Library** (by Adafruit) — When prompted to install dependencies (such as *Adafruit BusIO*), choose **"Install All"**.
+- **Adafruit SHT31 Library** (by Adafruit) — choose **"Install All"** dependencies.
 
 ### 3. WiFi Credentials Configuration
-This repository keeps WiFi credentials secure by separating them into `secrets.h`, which is listed in `.gitignore` so that it is never committed to GitHub.
-
-To configure your credentials:
-1. Make a copy of `secrets.h.example` and name it `secrets.h` in the same directory:
+1. Make a copy of `secrets.h.example` named `secrets.h`:
    ```bash
    cp secrets.h.example secrets.h
    ```
-2. Open `secrets.h` and edit your WiFi network name (SSID) and password:
+2. Edit `secrets.h` with your SSID and password:
    ```cpp
    #define SECRET_SSID "YOUR_WIFI_SSID"
    #define SECRET_PASS "YOUR_WIFI_PASSWORD"
@@ -106,35 +126,22 @@ To configure your credentials:
 ## Uploading Firmware
 
 ### Initial Upload (via USB)
-1. Connect your Wemos D1 Mini to your computer via USB.
-2. Open [wemos-homeyduino-sht30.ino](./wemos-homeyduino-sht30.ino) in the Arduino IDE.
-3. Select your board under **Tools > Board > ESP8266 Boards > LOLIN(WEMOS) D1 R2 & mini**.
-4. Select the correct **COM Port** under **Tools > Port**.
-5. Click **Upload** (the right-arrow icon at the top-left).
-6. Once complete, open the **Serial Monitor** (**Tools > Serial Monitor** at `115200` baud) to verify WiFi and sensor initialization.
-
----
+1. Connect Wemos D1 Mini via USB.
+2. Select COM Port under **Tools > Port**.
+3. Click **Upload**.
+4. Open **Tools > Serial Monitor** (`115200` baud) to verify startup.
 
 ### Subsequent Uploads (Wireless Over-The-Air / OTA)
-Once the sketch is uploaded over USB once and connected to your WiFi:
-1. Open the Arduino IDE on the same WiFi network.
-2. Go to **Tools > Port**.
-3. Under **Network Ports**, you will see your specific device (each board automatically appends its unique hardware chip ID):
-   ```text
-   Wemos-SHT30-1A2B at 192.168.x.x
-   ```
-4. Select that network port and click **Upload**!
-5. The firmware will flash wirelessly over WiFi without needing to plug the device into your PC.
+1. In Arduino IDE on the same WiFi network, go to **Tools > Port**.
+2. Select network port: `Wemos-SHT30-XXXX at 192.168.x.x`.
+3. Click **Upload** to flash wirelessly over WiFi.
 
 ---
 
 ## Pairing / Updating in Homey
-- **If adding as a new device**:
-  1. Open the **Homey App** > **Devices** > **+** > search for **Homeyduino**.
-  2. Select **Homeyduino** and choose your sensor (e.g., `Wemos-SHT30-1A2B`).
-  3. Once paired, you can rename the device in Homey to the room it is placed in (e.g. *"Bathroom"*, *"Greenhouse"*, *"Master Bedroom"*).
-- **If already paired**:
-  - Restart the device or trigger a capability sync in the Homeyduino app on Homey so Homey retrieves the newly registered capabilities.
+1. Open Homey App > **Devices** > **+** > search for **Homeyduino**.
+2. Select your sensor (e.g., `Wemos-SHT30-1A2B`).
+3. If previously paired, restart the device or trigger a capability sync in Homey so all 8 capabilities and actions become active.
 
 ---
 

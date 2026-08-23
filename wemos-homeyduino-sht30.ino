@@ -8,15 +8,20 @@
  * 
  * Features:
  * - Real-time temperature & humidity monitoring with psychrometric derivations
+ * - Comprehensive hardware, network, and memory diagnostics
+ * - Remote maintenance actions triggered from Homey Flows (Reboot, Reset Stats)
  * - Over-The-Air (OTA) wireless flashing support via Arduino IDE
  * - Non-blocking timing loop
  * 
  * Capabilities Reported to Homey Device Card:
  * 1. measure_temperature           - Ambient Temperature (°C)
  * 2. measure_humidity              - Relative Humidity (%)
- * 3. alarm_generic.mold            - Mold Risk Alert (RH >= 70%)
- * 4. alarm_water                   - Condensation Risk Alert (Temp - DewPoint <= 2.0°C)
- * 5. alarm_generic.freeze          - Freezing / Frost Risk Alert (Temp <= 3.0°C)
+ * 3. measure_signal_strength       - WiFi Signal Strength RSSI (dBm)
+ * 4. measure_voltage               - Internal Supply Rail Voltage Vcc (V)
+ * 5. alarm_generic.mold            - Mold Risk Alert (RH >= 70%)
+ * 6. alarm_water                   - Condensation Risk Alert (Temp - DewPoint <= 2.0°C)
+ * 7. alarm_generic.freeze          - Freezing / Frost Risk Alert (Temp <= 3.0°C)
+ * 8. alarm_generic.sensor          - SHT30 I2C Sensor Hardware Fault Alert
  * 
  * Flow Triggers with Tag Values:
  * - dew_point                      - Calculated Dew Point (°C)
@@ -26,7 +31,14 @@
  * - vpd                            - Vapor Pressure Deficit (kPa)
  * - freeze_risk                    - Freezing Risk State (boolean: true/false)
  * - frost_alert                    - Frost/Freeze Trigger Event (Temp °C)
-
+ * - device_booted                  - Emitted on boot/reconnect (Reset Reason tag)
+ * - diagnostics_heap               - Free RAM Heap (KB tag)
+ * - diagnostics_uptime             - System Uptime (Hours tag)
+ * - diagnostics_reconnects         - WiFi Reconnect Counter tag
+ * 
+ * Actions Callable from Homey Flows ("THEN" cards):
+ * - reboot                         - Remotely reboots the Wemos D1 Mini
+ * - reset_stats                    - Clears WiFi reconnect & I2C error counters
  * 
  * Dependencies (install via Arduino Library Manager):
  * - Homeyduino (by Athom)
@@ -46,20 +58,31 @@
 #include <ESP8266mDNS.h>
 #include <math.h>
 
+// Enable internal VCC rail measurement on ESP8266 ADC
+ADC_MODE(ADC_VCC);
+
 // Include the local secrets file containing WiFi SSID and password
 #include "secrets.h"
 
-// --- Configuration ---
+// --- Configuration Constants ---
 const char* BASE_DEVICE_NAME = "Wemos-SHT30";
-char deviceName[32];                          // Unique hostname populated at boot (e.g. "Wemos-SHT30-1A2B")
-const unsigned long MEASURE_INTERVAL = 15000; // Measurement interval in milliseconds (15 seconds)
-const float CONDENSATION_TEMP_MARGIN = 2.0f;  // Temperature margin in °C (alert if Temp - DewPoint <= 2.0°C)
-const float FREEZE_ALERT_TEMP = 3.0f;         // Temperature in °C for early freezing / frost risk alert
+char deviceName[32];                                // Unique hostname populated at boot (e.g. "Wemos-SHT30-1A2B")
+const unsigned long MEASURE_INTERVAL = 15000;       // Sensor measurement interval in ms (15 seconds)
+const unsigned long DIAGNOSTIC_INTERVAL = 60000;    // Diagnostic reporting interval in ms (60 seconds)
+const float CONDENSATION_TEMP_MARGIN = 2.0f;        // Temperature margin in °C (alert if Temp - DewPoint <= 2.0°C)
+const float FREEZE_ALERT_TEMP = 3.0f;               // Temperature in °C for early freezing / frost risk alert
 
 // --- Globals ---
 Adafruit_SHT31 sht30 = Adafruit_SHT31();
 unsigned long lastMeasureTime = 0;
+unsigned long lastDiagnosticTime = 0;
 bool sensorHealthy = false;
+bool wasConnected = false;
+bool bootTriggerSent = false;
+
+// Diagnostic Statistics & Counters
+uint32_t wifiReconnectCount = 0;
+uint32_t i2cErrorCount = 0;
 
 // --- System State & LED Diagnostic Codes ---
 enum SystemState {
@@ -83,6 +106,12 @@ float lastVpd = -999.0f;
 int lastMoldRisk = -1;         // -1 = uninitialized, 0 = false, 1 = true
 int lastCondensationRisk = -1; // -1 = uninitialized, 0 = false, 1 = true
 int lastFreezeRisk = -1;       // -1 = uninitialized, 0 = false, 1 = true
+int lastSensorFault = -1;      // -1 = uninitialized, 0 = false, 1 = true
+
+// Diagnostics cache
+int lastRssi = 999;
+float lastVcc = -999.0f;
+uint32_t lastFreeHeap = 0;
 
 // --- LED Diagnostic Controller ---
 
@@ -142,7 +171,6 @@ void updateLed() {
 
 /**
  * Calculates the Dew Point temperature in Celsius using the Magnus-Tetens approximation.
- * The dew point is the temperature at which water vapor condenses into liquid water.
  */
 float calculateDewPoint(float temp, float hum) {
   if (hum <= 0.0f) return temp;
@@ -154,22 +182,16 @@ float calculateDewPoint(float temp, float hum) {
 
 /**
  * Calculates Absolute Humidity in grams per cubic meter (g/m³).
- * Measures the actual mass of water vapor in a given volume of air,
- * independent of temperature fluctuations.
  */
 float calculateAbsoluteHumidity(float temp, float hum) {
   if (hum <= 0.0f) return 0.0f;
-  // Saturated vapor pressure (hPa) using Magnus-Tetens
   float satVaporPressure_hPa = 6.112f * exp((17.67f * temp) / (temp + 243.5f));
-  // Actual vapor pressure (hPa)
   float actualVaporPressure_hPa = (hum / 100.0f) * satVaporPressure_hPa;
-  // Absolute humidity in g/m³
   return (216.7f * actualVaporPressure_hPa) / (273.15f + temp);
 }
 
 /**
  * Calculates the Heat Index ("Feels Like" temperature) in Celsius.
- * Uses the Steadman / Rothfusz formula for temperatures >= 20°C.
  */
 float calculateHeatIndex(float temp, float hum) {
   if (temp < 20.0f) {
@@ -194,7 +216,6 @@ float calculateHeatIndex(float temp, float hum) {
 
 /**
  * Calculates Vapor Pressure Deficit (VPD) in kilopascals (kPa).
- * Measures the drying power of the air (crucial for plants/greenhouses).
  */
 float calculateVPD(float temp, float hum) {
   float vpsat_kPa = 0.61078f * exp((17.27f * temp) / (temp + 237.3f));
@@ -203,7 +224,28 @@ float calculateVPD(float temp, float hum) {
   return (vpd < 0.0f) ? 0.0f : vpd;
 }
 
-// Setup WiFi connection
+// --- Homey Remote Actions ("THEN" Flow Cards) ---
+
+/**
+ * Remotely reboots the ESP8266 from a Homey Flow.
+ */
+void handleRemoteReboot() {
+  Serial.println("\n[Homey Action] >>> Remote Reboot Triggered from Homey! <<<");
+  delay(200);
+  ESP.restart();
+}
+
+/**
+ * Resets the WiFi reconnect and I2C error statistics counters.
+ */
+void handleResetStats() {
+  Serial.println("\n[Homey Action] >>> Diagnostic Counters Reset from Homey! <<<");
+  wifiReconnectCount = 0;
+  i2cErrorCount = 0;
+}
+
+// --- Network & Service Initializations ---
+
 void setupWiFi() {
   Serial.println();
   Serial.print("Connecting to WiFi network: ");
@@ -212,7 +254,6 @@ void setupWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(SECRET_SSID, SECRET_PASS);
 
-  // Wait for connection
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED) {
     currentState = STATE_CONNECTING_WIFI;
@@ -220,19 +261,22 @@ void setupWiFi() {
     delay(500);
     Serial.print(".");
     attempts++;
-    if (attempts > 40) { // If it takes more than 20 seconds, reboot the board
+    if (attempts > 40) { // If connecting takes > 20s, reboot
       Serial.println("\nWiFi connection failed! Rebooting...");
       ESP.restart();
     }
   }
 
+  wasConnected = true;
   Serial.println();
   Serial.println("WiFi successfully connected!");
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
+  Serial.print("Signal Strength (RSSI): ");
+  Serial.print(WiFi.RSSI());
+  Serial.println(" dBm");
 }
 
-// Setup Multicast DNS (mDNS) responder
 void setupMDNS() {
   Serial.print("Starting mDNS responder... ");
   if (MDNS.begin(deviceName)) {
@@ -248,9 +292,7 @@ void setupMDNS() {
   }
 }
 
-// Setup Over-The-Air (OTA) firmware updates
 void setupOTA() {
-  // Set the OTA hostname (visible in Arduino IDE Network Ports)
   ArduinoOTA.setHostname(deviceName);
 
   #ifdef OTA_PASSWORD
@@ -285,6 +327,10 @@ void setupOTA() {
   Serial.println("OTA service ready (Port: 8266, Hostname: " + String(deviceName) + ")");
 }
 
+// Forward declarations
+void readAndReportSensor();
+void reportDiagnostics();
+
 void setup() {
   // Generate unique device name using the ESP8266 hardware Chip ID
   uint32_t chipId = ESP.getChipId();
@@ -298,9 +344,18 @@ void setup() {
   // Start Serial communication for debugging
   Serial.begin(115200);
   delay(100);
-  Serial.println("\n=== Wemos D1 Mini SHT30 Shield Setup ===");
+  Serial.println("\n=============================================");
+  Serial.println("   Wemos D1 Mini SHT30 Environment & Diagnostics Node   ");
+  Serial.println("=============================================");
   Serial.print("Device Hostname / ID: ");
   Serial.println(deviceName);
+  Serial.print("Reset Reason:         ");
+  Serial.println(ESP.getResetReason());
+  Serial.print("Core / SDK Version:   ");
+  Serial.println(ESP.getCoreVersion() + " / " + ESP.getSdkVersion());
+  Serial.print("Free Heap at Boot:    ");
+  Serial.print(ESP.getFreeHeap() / 1024.0f, 1);
+  Serial.println(" KB");
 
   // Connect to WiFi
   setupWiFi();
@@ -315,45 +370,63 @@ void setup() {
   Serial.println("Initializing Homeyduino...");
   Homey.begin(deviceName);
 
-  // Register Homey capabilities (standard IDs and sub-capabilities)
-  Homey.addCapability("measure_temperature");
-  Homey.addCapability("measure_humidity");
-  Homey.addCapability("alarm_generic.mold");   // Mold Risk Alert (RH >= 70%)
-  Homey.addCapability("alarm_water");          // Condensation Risk Alert (Temp approaches Dew Point)
-  Homey.addCapability("alarm_generic.freeze"); // Freezing / Frost Risk Alert (Temp <= 3.0°C)
+  // Register Homey capabilities
+  Homey.addCapability("measure_temperature");       // Ambient Temp (°C)
+  Homey.addCapability("measure_humidity");          // Relative Humidity (%)
+  Homey.addCapability("measure_signal_strength");   // WiFi Signal Strength (dBm)
+  Homey.addCapability("measure_voltage");           // ESP8266 Internal Vcc Rail (V)
+  Homey.addCapability("alarm_generic.mold");        // Mold Risk Alert (RH >= 70%)
+  Homey.addCapability("alarm_water");               // Condensation Risk Alert
+  Homey.addCapability("alarm_generic.freeze");      // Freezing / Frost Risk Alert
+  Homey.addCapability("alarm_generic.sensor");      // Sensor Hardware Fault Alert
+
+  // Register Homey Flow Actions ("THEN" cards)
+  Homey.addAction("reboot", handleRemoteReboot);
+  Homey.addAction("reset_stats", handleResetStats);
   
-  Serial.println("Capabilities registered:");
+  Serial.println("Capabilities registered on Homey Device Tile:");
   Serial.println(" - measure_temperature (Temp °C)");
   Serial.println(" - measure_humidity (Rel Hum %)");
-  Serial.println(" - alarm_generic.mold (Mold Risk Alert)");
-  Serial.println(" - alarm_water (Condensation Alert)");
-  Serial.println(" - alarm_generic.freeze (Freeze Risk Alert)");
-  Serial.println("Triggers enabled for Homey Flows:");
-  Serial.println(" - dew_point (tag: °C)");
-  Serial.println(" - dew_point_spread (tag: °C)");
-  Serial.println(" - absolute_humidity (tag: g/m³)");
-  Serial.println(" - heat_index (tag: °C)");
-  Serial.println(" - vpd (tag: kPa)");
-  Serial.println(" - freeze_risk (boolean tag)");
-  Serial.println(" - frost_alert (temp tag: °C)");
+  Serial.println(" - measure_signal_strength (WiFi RSSI dBm)");
+  Serial.println(" - measure_voltage (ESP8266 Vcc V)");
+  Serial.println(" - alarm_generic.mold (Mold Risk)");
+  Serial.println(" - alarm_water (Condensation Risk)");
+  Serial.println(" - alarm_generic.freeze (Freeze Risk)");
+  Serial.println(" - alarm_generic.sensor (Sensor Fault)");
+  Serial.println("Actions registered for Homey Flows:");
+  Serial.println(" - reboot (Remote ESP8266 restart)");
+  Serial.println(" - reset_stats (Clear error/reconnect counters)");
 
   // Initialize I2C and SHT30 Sensor
   Wire.begin();
   if (!sht30.begin(0x45)) {
     sensorHealthy = false;
-    Serial.println("ERROR: SHT30 sensor shield not found at address 0x45!");
+    i2cErrorCount++;
+    Serial.println("ERROR: SHT30 sensor shield not found at I2C address 0x45!");
   } else {
     sensorHealthy = true;
     Serial.println("SHT30 sensor successfully initialized.");
   }
   
-  Serial.println("Sensor configuration complete. Starting measurement loop.");
+  Serial.println("Initialization complete. Starting measurement and diagnostic loops.\n");
 }
 
 void loop() {
-  // Dynamically evaluate overall system state & update LED diagnostics
+  bool isConnected = (WiFi.status() == WL_CONNECTED);
+
+  // Track WiFi disconnects / reconnects
+  if (wasConnected && !isConnected) {
+    wasConnected = false;
+    currentState = STATE_WIFI_LOST;
+  } else if (!wasConnected && isConnected) {
+    wasConnected = true;
+    wifiReconnectCount++;
+    Serial.println("[WiFi] Reconnected to network! Total reconnects: " + String(wifiReconnectCount));
+  }
+
+  // Evaluate LED system state
   if (currentState != STATE_OTA_UPDATING) {
-    if (WiFi.status() != WL_CONNECTED) {
+    if (!isConnected) {
       currentState = STATE_WIFI_LOST;
     } else if (!sensorHealthy) {
       currentState = STATE_SENSOR_FAULT;
@@ -366,44 +439,61 @@ void loop() {
   // Keep mDNS service updated
   MDNS.update();
 
-  // Always handle incoming OTA updates
+  // Handle incoming OTA updates
   ArduinoOTA.handle();
 
-  // Always call Homey.loop() to process incoming network requests
+  // Process incoming Homeyduino network requests
   Homey.loop();
 
-  // Run non-blocking periodic task to read sensor and report values
+  // Send single on-boot flow trigger once Homey connection is active
+  if (isConnected && !bootTriggerSent) {
+    String resetInfo = ESP.getResetReason();
+    Homey.trigger("device_booted", resetInfo);
+    bootTriggerSent = true;
+    Serial.println("[Homey] Emitted 'device_booted' trigger with reason: " + resetInfo);
+  }
+
   unsigned long currentMillis = millis();
+
+  // Periodic sensor measurement loop (every 15 seconds)
   if (currentMillis - lastMeasureTime >= MEASURE_INTERVAL || lastMeasureTime == 0) {
     lastMeasureTime = currentMillis;
     readAndReportSensor();
   }
+
+  // Periodic system diagnostic loop (every 60 seconds)
+  if (currentMillis - lastDiagnosticTime >= DIAGNOSTIC_INTERVAL || lastDiagnosticTime == 0) {
+    lastDiagnosticTime = currentMillis;
+    reportDiagnostics();
+  }
 }
 
-// Function to read SHT30 sensor and report values to Homey
+/**
+ * Reads SHT30 sensor and reports environmental readings to Homey
+ */
 void readAndReportSensor() {
   Serial.print("[");
   Serial.print(millis() / 1000);
-  Serial.print("s] Reading sensor... ");
+  Serial.print("s] Reading SHT30 sensor... ");
 
   float temp = sht30.readTemperature();
   float hum = sht30.readHumidity();
 
-  // Check if readings are valid (not NaN)
+  // Check if readings are valid
   if (!isnan(temp) && !isnan(hum)) {
     sensorHealthy = true;
 
     // Calculate derived environmental metrics
     float dewPoint = calculateDewPoint(temp, hum);
-    float dewPointSpread = temp - dewPoint; // Temperature delta above dew point
+    float dewPointSpread = temp - dewPoint;
     float absHum = calculateAbsoluteHumidity(temp, hum);
     float heatIndex = calculateHeatIndex(temp, hum);
     float vpd = calculateVPD(temp, hum);
-    bool moldRisk = (hum >= 70.0f); // High humidity favorable for mold growth
-    bool condensationRisk = (dewPointSpread <= CONDENSATION_TEMP_MARGIN); // Temp near dew point
-    bool freezeRisk = (temp <= FREEZE_ALERT_TEMP); // Freezing / Frost early warning
+    bool moldRisk = (hum >= 70.0f);
+    bool condensationRisk = (dewPointSpread <= CONDENSATION_TEMP_MARGIN);
+    bool freezeRisk = (temp <= FREEZE_ALERT_TEMP);
 
-    // Print all readings to Serial Monitor
+    // Print to Serial Monitor
     Serial.println();
     Serial.print("  ├─ Temp:             "); Serial.print(temp, 1); Serial.println(" °C");
     Serial.print("  ├─ Rel Humidity:     "); Serial.print(hum, 1); Serial.println(" %");
@@ -417,35 +507,30 @@ void readAndReportSensor() {
     Serial.print("  └─ Freezing Risk:    "); Serial.println(freezeRisk ? "ALERT (Temp <= 3°C)" : "OK");
 
     // Report standard capabilities to Homey
-    // 1. Temperature (°C)
     if (abs(temp - lastTemp) >= 0.05f || lastTemp == -999.0f) {
       if (Homey.setCapabilityValue("measure_temperature", temp)) {
         lastTemp = temp;
       }
     }
 
-    // 2. Relative Humidity (%)
     if (abs(hum - lastHum) >= 0.1f || lastHum == -999.0f) {
       if (Homey.setCapabilityValue("measure_humidity", hum)) {
         lastHum = hum;
       }
     }
 
-    // 3. Mold Risk Alert (alarm_generic.mold)
     if (lastMoldRisk == -1 || ((lastMoldRisk == 1) != moldRisk)) {
       if (Homey.setCapabilityValue("alarm_generic.mold", moldRisk)) {
         lastMoldRisk = moldRisk ? 1 : 0;
       }
     }
 
-    // 4. Condensation Risk Alert (alarm_water)
     if (lastCondensationRisk == -1 || ((lastCondensationRisk == 1) != condensationRisk)) {
       if (Homey.setCapabilityValue("alarm_water", condensationRisk)) {
         lastCondensationRisk = condensationRisk ? 1 : 0;
       }
     }
 
-    // 5. Freezing / Frost Risk Alert (alarm_generic.freeze)
     if (lastFreezeRisk == -1 || ((lastFreezeRisk == 1) != freezeRisk)) {
       if (Homey.setCapabilityValue("alarm_generic.freeze", freezeRisk)) {
         lastFreezeRisk = freezeRisk ? 1 : 0;
@@ -456,7 +541,14 @@ void readAndReportSensor() {
       }
     }
 
-    // Emit Flow Triggers with tag values for Homey Flows
+    // Reset sensor fault alarm if it was previously set
+    if (lastSensorFault != 0) {
+      if (Homey.setCapabilityValue("alarm_generic.sensor", false)) {
+        lastSensorFault = 0;
+      }
+    }
+
+    // Emit Flow Triggers with tag values
     if (abs(dewPoint - lastDewPoint) >= 0.1f || lastDewPoint == -999.0f) {
       Homey.trigger("dew_point", dewPoint);
       lastDewPoint = dewPoint;
@@ -483,6 +575,56 @@ void readAndReportSensor() {
     }
   } else {
     sensorHealthy = false;
+    i2cErrorCount++;
     Serial.println("ERROR: Failed to read from SHT30 sensor shield!");
+
+    if (lastSensorFault != 1) {
+      if (Homey.setCapabilityValue("alarm_generic.sensor", true)) {
+        lastSensorFault = 1;
+      }
+    }
   }
+}
+
+/**
+ * Gathers and reports hardware, network, and memory diagnostics to Homey
+ */
+void reportDiagnostics() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  // 1. WiFi RSSI (Signal Strength)
+  int currentRssi = WiFi.RSSI();
+  if (abs(currentRssi - lastRssi) >= 2 || lastRssi == 999) {
+    if (Homey.setCapabilityValue("measure_signal_strength", (float)currentRssi)) {
+      lastRssi = currentRssi;
+    }
+  }
+
+  // 2. Internal Vcc Rail Voltage (V)
+  float currentVcc = ESP.getVcc() / 1000.0f;
+  if (abs(currentVcc - lastVcc) >= 0.03f || lastVcc == -999.0f) {
+    if (Homey.setCapabilityValue("measure_voltage", currentVcc)) {
+      lastVcc = currentVcc;
+    }
+  }
+
+  // 3. System Uptime & Heap Statistics
+  uint32_t freeHeap = ESP.getFreeHeap();
+  uint8_t heapFrag = ESP.getHeapFragmentation();
+  float uptimeHours = (float)millis() / 3600000.0f;
+
+  // Emit flow triggers for deep diagnostic metrics
+  Homey.trigger("diagnostics_heap", (float)(freeHeap / 1024.0f));
+  Homey.trigger("diagnostics_uptime", uptimeHours);
+  Homey.trigger("diagnostics_reconnects", (int)wifiReconnectCount);
+
+  // Serial Diagnostics summary
+  Serial.println("\n--- [System & Network Diagnostics] ---");
+  Serial.print("  ├─ WiFi Signal (RSSI):   "); Serial.print(currentRssi); Serial.println(" dBm");
+  Serial.print("  ├─ Supply Rail (Vcc):    "); Serial.print(currentVcc, 2); Serial.println(" V");
+  Serial.print("  ├─ System Uptime:        "); Serial.print(uptimeHours, 2); Serial.println(" hours");
+  Serial.print("  ├─ Free Heap RAM:        "); Serial.print(freeHeap / 1024.0f, 1); Serial.print(" KB (Frag: "); Serial.print(heapFrag); Serial.println("%)");
+  Serial.print("  ├─ WiFi Reconnect Count: "); Serial.println(wifiReconnectCount);
+  Serial.print("  └─ I2C Error Count:      "); Serial.println(i2cErrorCount);
+  Serial.println("--------------------------------------\n");
 }
