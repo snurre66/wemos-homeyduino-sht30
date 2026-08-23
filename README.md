@@ -1,17 +1,42 @@
 # Wemos D1 Mini SHT30 Homeyduino Sensor & Diagnostics Node
 
-This project is an advanced environmental sensor and diagnostics node built using a **Wemos D1 Mini (ESP8266)** and an **SHT30 Shield**. It uses the **Homeyduino** library to report raw measurements, psychrometric climate derivations, system/network health diagnostics, and remote maintenance actions to an **Athom Homey** smart home gateway.
+This project is an advanced environmental sensor and diagnostics node built using a **Wemos D1 Mini (ESP8266)** and an **SHT30 Shield**. It uses the **Homeyduino** library to report raw measurements, psychrometric climate derivations, system/network health diagnostics, and remote maintenance actions to an **Athom Homey** smart home gateway, while serving a sleek, built-in **Web Dashboard** on port 80.
 
-## Features
-- **Real-time Environmental Monitoring:** Reads temperature and humidity from the I2C-based SHT30 sensor shield (address `0x45`).
-- **Psycho-Climatic Calculations:** Automatically calculates dew point, absolute humidity, heat index ("feels like"), vapor pressure deficit (VPD), mold risk, and freezing risk.
-- **Distinct Functional Alarms in Homey:** Maps each alarm state to a distinct standard Homey alarm capability with its own icon and localized title (*Vannalarm*, *Sabotasjealarm*, *Generell alarm*).
-- **Hardware & Network Diagnostics:** Continuously monitors WiFi signal strength (RSSI), internal supply rail voltage ($V_{cc}$), free heap memory, fragmentation, and WiFi reconnect counters.
-- **Remote Maintenance Actions:** Supports Homey Flow "THEN" cards to remotely reboot the ESP8266 or reset diagnostic counters.
-- **Boot Notifications:** Emits a `device_booted` trigger to Homey on startup containing the reset reason (Power On, Watchdog, Exception).
-- **Serial Debugging:** Prints structured tree diagnostics to the Serial Monitor (115200 baud).
-- **Over-The-Air (OTA) Updates:** Allows wireless firmware flashing directly from the Arduino IDE.
-- **Non-blocking Timing:** Uses asynchronous `millis()` timing loops (15s sensor / 60s diagnostics) to maintain network responsiveness.
+---
+
+## 🌟 Key Features
+
+- **🌐 Built-in Web Interface (Port 80):** Mobile-responsive dashboard accessible via browser (`http://<device-ip>/` or `http://Wemos-SHT30-XXXX.local`). Features a tabbed UI separating environmental sensors from hardware diagnostics.
+- **⚡ Live Dynamic Updates:** Uses non-blocking client-side asynchronous polling (`fetch('/api/data')`) every 3 seconds for instant real-time telemetry without page reloads.
+- **🌡️ Real-time Environmental Monitoring:** Reads temperature and humidity from the I2C-based SHT30 sensor shield (address `0x45`).
+- **🌿 Psycho-Climatic Calculations:** Automatically calculates dew point, dew point spread margin, absolute humidity ($\text{g/m}^3$), heat index ("feels like"), vapor pressure deficit (VPD), mold risk, and freezing risk.
+- **🚨 Distinct Functional Alarms in Homey:** Maps each alarm state to a distinct standard Homey capability (*Vannalarm*, *Sabotasjealarm*, *Generell alarm*).
+- **📶 Hardware & Network Diagnostics:** Continuously monitors WiFi signal strength (RSSI), internal supply rail voltage ($V_{cc}$), free heap memory, fragmentation, and WiFi reconnect counters.
+- **🛠️ Remote Maintenance Actions:** Supports remote reboot and counter reset from both Homey Flows and Web UI buttons.
+- **📡 Boot Notifications:** Emits a `device_booted` trigger to Homey on startup containing the reset reason (Power On, Watchdog, Exception).
+- **📶 Over-The-Air (OTA) Updates:** Allows wireless firmware flashing directly from the Arduino IDE.
+
+---
+
+## 🖥️ Web Interface Overview
+
+Access the web dashboard in any browser on your local network:
+- **`http://<device-ip>/`** or **`http://Wemos-SHT30-XXXX.local`**
+
+### Tab 1: 📊 Sensors & Climate
+- **Hero Tiles:** Large gauges for **Temperature (°C)** and **Relative Humidity (%)**.
+- **Psychrometric Comfort Metrics:** Dew Point (°C), Dew Point Spread Margin (°C), Absolute Humidity ($\text{g/m}^3$), Heat Index (°C), and VPD (kPa).
+- **Status Pills:** Live indicators for Condensation Risk, Mold Risk, Freezing Risk, and SHT30 Hardware Health.
+
+### Tab 2: ⚙️ System Diagnostics
+- **Wireless & Network:** WiFi SSID, Signal Strength (RSSI in dBm), IP Address, MAC Address, Reconnect Count.
+- **Hardware & Resources:** System Uptime (*Xd Xh Xm Xs*), Internal Supply Rail Voltage ($V_{cc}$), Free Heap RAM (KB), Heap Fragmentation (%), Boot/Reset Reason, I2C Error Counter.
+- **Remote Maintenance:** One-click **Reboot ESP8266** and **Reset Counters** buttons.
+
+### REST API Endpoint (`/api/data`)
+- `GET /api/data`: Returns full telemetry JSON snapshot.
+- `POST /api/reboot`: Triggers software restart.
+- `POST /api/reset_stats`: Resets WiFi drop and I2C error counters.
 
 ---
 
@@ -50,15 +75,12 @@ This project is an advanced environmental sensor and diagnostics node built usin
 
 ## Remote Maintenance Actions (Homey Flow "THEN" Cards)
 
-You can trigger these actions directly from any Homey Flow "THEN" card:
 - **`reboot`**: Remotely reboots the Wemos D1 Mini board.
 - **`reset_stats`**: Clears the WiFi reconnect counter and I2C error counters.
 
 ---
 
 ## Visual LED Status & Diagnostics
-
-The Wemos D1 Mini built-in LED indicates real-time operational status:
 
 | LED Pattern | Timing / Rhythm | Status / Fault Meaning | Action Required |
 | :--- | :--- | :--- | :--- |
@@ -75,7 +97,8 @@ The Wemos D1 Mini built-in LED indicates real-time operational status:
 1. Open [`wemos-homeyduino-sht30.ino`](./wemos-homeyduino-sht30.ino) in Arduino IDE.
 2. Ensure credentials are set in `secrets.h`.
 3. Upload via USB or OTA.
-4. In the Homey app, re-pair or restart the device to refresh capabilities.
+4. Navigate to `http://<device-ip>/` in your browser to view the live dashboard.
+5. In the Homey app, re-pair or restart the device to refresh capabilities.
 
 ---
 
