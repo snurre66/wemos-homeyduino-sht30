@@ -11,12 +11,15 @@
  * - Real-time air temperature & relative humidity monitoring (SHT30)
  * - Simulated Liquid Core Temperature (PT1 thermal low-pass filter modeling a 750ml bottle)
  * - Cork Dryness Alert (RH < 50.0% alert to prevent cork shrinkage and wine oxidation)
- * - Wine Cellar Temperature Range Alarms (Low < 8.0°C, High > 16.0°C)
+ * - Wine Cellar Temperature Range Alarms (Low < 8.0°C, High > 16.0°C) with Hysteresis
  * - Rapid Temperature Rise / Open Door / Cooling Failure Alert (ΔT > 1.5°C over 5 min)
  * - Condensation & Mold Risk psychrometric derivations (Magnus-Tetens)
+ * - SHT30 Integrated Heater / De-fogging support (10s bake-out cycle to clear moisture)
+ * - Dual I2C Auto-detection (probes 0x45 primary and 0x44 secondary)
+ * - RTC User Memory Persistence: Preserves bottle core temperature across soft reboots / OTA
  * - Stealth Mode: Configurable dark mode disabling onboard LEDs inside glass-door cabinets
  * - Persistent Device Naming: Set custom name via Web UI (saved in EEPROM) or secrets.h
- * - Embedded Web Server (Port 80) with live mobile-responsive wine cellar dashboard
+ * - Embedded Web Server (Port 80) with zero-copy PROGMEM streaming dashboard
  * - Over-The-Air (OTA) wireless firmware update support
  * - Non-blocking timing architecture
  * 
@@ -67,6 +70,7 @@
  * - reset_stats                    - Clears WiFi reconnect & I2C error counters
  * - set_stealth_mode               - Sets stealth LED mode ("true"/"false" or "1"/"0")
  * - toggle_stealth_mode            - Toggles stealth mode on/off
+ * - defog_sensor                   - Activates SHT30 heater for 10s to clear condensation
  * 
  * Dependencies (install via Arduino Library Manager):
  * - Homeyduino (by Athom)
@@ -100,29 +104,49 @@ ADC_MODE(ADC_VCC);
 #define EEPROM_NAME_ADDR 1
 #define MAX_NAME_LEN 31
 
+// --- RTC User Memory Layout (survives soft resets & OTA updates) ---
+#define RTC_WINE_MAGIC 0x57494E45                   // "WINE"
+#define RTC_USER_OFFSET 64                          // First safe 4-byte block in ESP8266 RTC user memory
+
+struct RtcWineData {
+  uint32_t magic;
+  float liquidTemp;
+  uint32_t checksum;
+};
+
 // --- Configuration & Wine Storage Constants ---
 const char* BASE_DEVICE_NAME = "Wemos-SHT30";
 char deviceName[32];                                // Active hostname populated at boot
 const unsigned long MEASURE_INTERVAL = 15000;       // Sensor measurement interval in ms (15 seconds)
 const unsigned long DIAGNOSTIC_INTERVAL = 60000;    // Diagnostic reporting interval in ms (60 seconds)
 
-// Wine Preservation Thresholds
+// Wine Preservation Thresholds with Hysteresis (prevents alarm flapping)
 const float WINE_TEMP_MIN = 8.0f;                   // Lower warning limit in °C (Optimal is 10-14°C)
+const float WINE_TEMP_MIN_CLEAR = 8.5f;             // Clear lower warning at 8.5°C
 const float WINE_TEMP_MAX = 16.0f;                  // Upper warning limit in °C (Avoid > 18°C)
+const float WINE_TEMP_MAX_CLEAR = 15.5f;            // Clear upper warning at 15.5°C
 const float CORK_DRY_RH_THRESHOLD = 50.0f;          // Critical cork dryness threshold in % RH
+const float CORK_DRY_RH_CLEAR = 52.0f;              // Clear cork dryness alert at 52% RH
 const float MOLD_RH_THRESHOLD = 75.0f;              // Mold growth threshold in % RH
+const float MOLD_RH_CLEAR = 73.0f;                  // Clear mold alert at 73% RH
 const float CONDENSATION_TEMP_MARGIN = 2.0f;        // Margin above dew point in °C
+const float CONDENSATION_MARGIN_CLEAR = 2.5f;       // Clear condensation alert at 2.5°C margin
 const float FREEZE_ALERT_TEMP = 3.0f;               // Critical freeze protection in °C
+const float FREEZE_ALERT_CLEAR = 3.5f;              // Clear freeze alert at 3.5°C
 const float RAPID_TEMP_RISE_THRESHOLD = 1.5f;       // Rapid temp rise alert threshold in °C (5 min window)
 
 // Thermal Model: 750ml Wine Bottle Thermal Time Constant (tau ≈ 3.5 hours = 12600 seconds)
 const float THERMAL_TIME_CONSTANT_SEC = 12600.0f;
+
+// SHT30 De-fog Heater Duration
+const unsigned long HEATER_DURATION_MS = 10000;     // 10-second heater pulse to bake out condensation
 
 // --- Web Server on Port 80 ---
 ESP8266WebServer server(80);
 
 // --- Globals ---
 Adafruit_SHT31 sht30 = Adafruit_SHT31();
+uint8_t sht30Address = 0x45;                        // Active I2C address (0x45 primary, 0x44 secondary)
 unsigned long lastMeasureTime = 0;
 unsigned long lastDiagnosticTime = 0;
 bool sensorHealthy = false;
@@ -130,6 +154,10 @@ bool wasConnected = false;
 bool bootTriggerSent = false;
 bool stealthMode = false;                           // When true, disables status LED during normal operation
 bool customNameFromEeprom = false;
+
+// SHT30 De-fog Heater State
+bool heaterActive = false;
+unsigned long heaterStartTime = 0;
 
 // Diagnostic Statistics & Counters
 uint32_t wifiReconnectCount = 0;
@@ -169,9 +197,10 @@ enum SystemState {
 
 SystemState currentState = STATE_CONNECTING_WIFI;
 
-// Track last sent values to minimize redundant network transmissions
+// Track last sent capability values to minimize redundant network transmissions
 float lastTemp = -999.0f;
 float lastLiquidTemp = -999.0f;
+float lastTriggerLiquidTemp = -999.0f;               // Dedicated trigger tracker to ensure liquid_temp fires reliably
 float lastHum = -999.0f;
 float lastDewPoint = -999.0f;
 float lastDewPointSpread = -999.0f;
@@ -191,6 +220,35 @@ String lastWineStatus = "";
 int lastRssi = 999;
 float lastVcc = -999.0f;
 uint32_t lastFreeHeap = 0;
+
+// --- RTC Memory Wine State Persistence ---
+
+static inline uint32_t calculateRtcChecksum(const RtcWineData& data) {
+  uint32_t tempBits;
+  memcpy(&tempBits, &data.liquidTemp, sizeof(float));
+  return data.magic ^ tempBits ^ 0xAA55AA55;
+}
+
+bool loadWineStateFromRtc(float& tempOut) {
+  RtcWineData data;
+  if (ESP.rtcUserMemoryRead(RTC_USER_OFFSET, (uint32_t*)&data, sizeof(data))) {
+    if (data.magic == RTC_WINE_MAGIC && data.checksum == calculateRtcChecksum(data)) {
+      if (!isnan(data.liquidTemp) && data.liquidTemp > -10.0f && data.liquidTemp < 50.0f) {
+        tempOut = data.liquidTemp;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void saveWineStateToRtc(float temp) {
+  RtcWineData data;
+  data.magic = RTC_WINE_MAGIC;
+  data.liquidTemp = temp;
+  data.checksum = calculateRtcChecksum(data);
+  ESP.rtcUserMemoryWrite(RTC_USER_OFFSET, (uint32_t*)&data, sizeof(data));
+}
 
 // --- EEPROM Device Name Management & mDNS Sanitization ---
 
@@ -285,7 +343,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>%DEVICE_NAME% &bull; Wine Cellar Dashboard</title>
+  <title>Wine Cellar &bull; Climate Dashboard</title>
   <style>
     :root {
       --bg: #090d16; --card: #151e2e; --card-border: #24344d;
@@ -359,7 +417,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   <div class="container">
     <header>
       <div class="title-group">
-        <h1>🍷 <span id="devName">%DEVICE_NAME%</span></h1>
+        <h1>🍷 <span id="devName">WineCabinet</span></h1>
         <span id="devSub">Vestfrost VKG Wine Cabinet Sensor &bull; Homey Pro</span>
       </div>
       <div class="status-badge" id="netBadge">
@@ -458,6 +516,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       <div class="section-title">🛠️ Controls & Modes</div>
       <div class="btn-group">
         <button class="btn btn-stealth" id="btnStealth" onclick="toggleStealth()">🌙 Stealth Mode (LED Off)</button>
+        <button class="btn btn-primary" id="btnDefog" onclick="runDefog()">♨️ De-fog Sensor (10s)</button>
         <button class="btn" onclick="resetStats()">🧹 Clear Counters</button>
         <button class="btn btn-danger" onclick="rebootDevice()">🔄 Reboot Node</button>
       </div>
@@ -542,6 +601,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         const d = await res.json();
 
         // Header & Name
+        document.title = d.device + ' \u2022 Wine Cellar Dashboard';
         document.getElementById('devName').textContent = d.device;
         document.getElementById('txtMdns').textContent = d.device.toLowerCase() + '.local';
         if (!currentLoadedName) {
@@ -569,7 +629,9 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         setPill('alarmDoor', 'txtDoor', d.rapid_temp_rise, 'TEMP SPIKE (>1.5°C)', 'Stable', false);
         setPill('alarmCondensation', 'txtCondensation', d.condensation_risk, 'CONDENSATION', 'OK', false);
         setPill('alarmMold', 'txtMold', d.mold_risk, 'HIGH RH (>75%)', 'OK', false);
-        setPill('alarmSensor', 'txtSensor', !d.sensor_healthy, 'I2C FAULT', 'Healthy', false);
+        
+        const sensorStatusText = d.heater_active ? 'Heater On' : (d.sensor_healthy ? ('Healthy (' + d.i2c_addr + ')') : 'I2C Fault');
+        setPill('alarmSensor', 'txtSensor', !d.sensor_healthy, sensorStatusText, sensorStatusText, d.heater_active);
 
         // Diagnostics
         document.getElementById('wifiSsid').textContent = d.ssid;
@@ -589,6 +651,18 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         } else {
           sBtn.className = 'btn btn-stealth';
           sBtn.textContent = '💡 Stealth Mode: OFF (LED On)';
+        }
+
+        // De-fog button state
+        const defogBtn = document.getElementById('btnDefog');
+        if(defogBtn) {
+          if(d.heater_active) {
+            defogBtn.textContent = '♨️ De-fogging Active...';
+            defogBtn.style.opacity = '0.6';
+          } else {
+            defogBtn.textContent = '♨️ De-fog Sensor (10s)';
+            defogBtn.style.opacity = '1';
+          }
         }
       } catch(e) {
         console.error('Fetch error:', e);
@@ -623,6 +697,13 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     async function toggleStealth() {
       await fetch('/api/toggle_stealth', { method: 'POST' });
       fetchData();
+    }
+
+    async function runDefog() {
+      if(confirm('Run SHT30 sensor de-fog heater cycle for 10 seconds to clear moisture?')) {
+        await fetch('/api/defog', { method: 'POST' });
+        fetchData();
+      }
     }
 
     async function rebootDevice() {
@@ -668,16 +749,19 @@ String formatUptime(unsigned long totalSeconds) {
 // --- Web Server Route Handlers ---
 
 void handleRoot() {
-  String html = FPSTR(INDEX_HTML);
-  html.replace("%DEVICE_NAME%", deviceName);
-  server.send(200, "text/html", html);
+  // Direct zero-copy streaming from PROGMEM flash (saves ~20 KB of heap RAM)
+  server.send_P(200, "text/html", INDEX_HTML);
 }
 
 void handleApiData() {
   unsigned long nowSec = millis() / 1000;
   float vcc = ESP.getVcc() / 1000.0f;
 
-  String json = "{";
+  // Pre-allocate buffer to prevent heap fragmentation during frequent polling
+  String json;
+  json.reserve(700);
+
+  json = "{";
   json += "\"device\":\"" + String(deviceName) + "\",";
   json += "\"custom_name\":" + String(customNameFromEeprom ? "true" : "false") + ",";
   json += "\"uptime_sec\":" + String(nowSec) + ",";
@@ -698,6 +782,8 @@ void handleApiData() {
   json += "\"condensation_risk\":" + String(currentCondensationRisk ? "true" : "false") + ",";
   json += "\"freeze_risk\":" + String(currentFreezeRisk ? "true" : "false") + ",";
   json += "\"stealth_mode\":" + String(stealthMode ? "true" : "false") + ",";
+  json += "\"heater_active\":" + String(heaterActive ? "true" : "false") + ",";
+  json += "\"i2c_addr\":\"0x" + String(sht30Address, HEX) + "\",";
   json += "\"sensor_healthy\":" + String(sensorHealthy ? "true" : "false") + ",";
   json += "\"rssi\":" + String(WiFi.RSSI()) + ",";
   json += "\"vcc\":" + String(vcc, 2) + ",";
@@ -712,6 +798,37 @@ void handleApiData() {
   json += "}";
 
   server.send(200, "application/json", json);
+}
+
+// --- SHT30 De-fog Heater Controller ---
+
+void startHeaterCycle() {
+  if (!sensorHealthy) return;
+  sht30.heater(true);
+  heaterActive = true;
+  heaterStartTime = millis();
+  Serial.println("\n[Sensor] SHT30 de-fog heater activated for 10 seconds.");
+}
+
+void stopHeaterCycle() {
+  if (heaterActive) {
+    sht30.heater(false);
+    heaterActive = false;
+    Serial.println("[Sensor] SHT30 de-fog heater turned OFF.");
+  }
+}
+
+void updateHeater() {
+  if (heaterActive) {
+    if (millis() - heaterStartTime >= HEATER_DURATION_MS) {
+      stopHeaterCycle();
+    }
+  }
+}
+
+void handleApiDefog() {
+  startHeaterCycle();
+  server.send(200, "application/json", "{\"status\":\"ok\",\"heater\":true}");
 }
 
 void handleApiSetName() {
@@ -855,6 +972,11 @@ void handleToggleStealthMode() {
   Serial.println("\n[Homey Action] >>> Toggled Stealth Mode: " + String(stealthMode ? "ON" : "OFF") + " <<<");
 }
 
+void handleDefogSensor() {
+  Serial.println("\n[Homey Action] >>> SHT30 De-fog Heater Triggered from Homey! <<<");
+  startHeaterCycle();
+}
+
 // --- Network & Service Initializations ---
 
 void setupWiFi() {
@@ -862,7 +984,9 @@ void setupWiFi() {
   Serial.print("Connecting to WiFi network: ");
   Serial.println(SECRET_SSID);
 
+  WiFi.persistent(false);                            // Prevent writing WiFi connection state to SPI flash on every connect
   WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);                       // Ensure background auto-reconnect if AP drops
   WiFi.begin(SECRET_SSID, SECRET_PASS);
 
   int attempts = 0;
@@ -872,20 +996,25 @@ void setupWiFi() {
     delay(500);
     Serial.print(".");
     attempts++;
-    if (attempts > 40) {
-      Serial.println("\nWiFi connection failed! Rebooting...");
-      ESP.restart();
+    if (attempts > 60) {
+      Serial.println("\nWiFi connection timed out! Will continue non-blocking reconnect attempts in background.");
+      break;
     }
   }
 
-  wasConnected = true;
-  Serial.println();
-  Serial.println("WiFi successfully connected!");
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.localIP());
-  Serial.print("Signal Strength (RSSI): ");
-  Serial.print(WiFi.RSSI());
-  Serial.println(" dBm");
+  if (WiFi.status() == WL_CONNECTED) {
+    wasConnected = true;
+    Serial.println();
+    Serial.println("WiFi successfully connected!");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("Signal Strength (RSSI): ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
+  } else {
+    wasConnected = false;
+    currentState = STATE_WIFI_LOST;
+  }
 }
 
 void setupMDNS() {
@@ -906,6 +1035,7 @@ void setupMDNS() {
 void setupWebServer() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/data", HTTP_GET, handleApiData);
+  server.on("/api/defog", HTTP_POST, handleApiDefog);
   server.on("/api/set_name", HTTP_POST, handleApiSetName);
   server.on("/api/reset_name", HTTP_POST, handleApiResetName);
   server.on("/api/toggle_stealth", HTTP_POST, handleApiToggleStealth);
@@ -1007,6 +1137,7 @@ void setup() {
   Homey.addAction("reset_stats", handleResetStats);
   Homey.addAction("set_stealth_mode", handleSetStealthMode);
   Homey.addAction("toggle_stealth_mode", handleToggleStealthMode);
+  Homey.addAction("defog_sensor", handleDefogSensor);
   
   Serial.println("Capabilities registered on Homey Device Tile:");
   Serial.println(" - measure_temperature        (Air Temp °C)");
@@ -1018,15 +1149,23 @@ void setup() {
   Serial.println(" - alarm_generic              (Mold Risk)");
   Serial.println(" - alarm_tamper               (SHT30 Hardware Fault)");
 
-  // Initialize I2C and SHT30 Sensor
-  Wire.begin();
-  if (!sht30.begin(0x45)) {
+  // Initialize I2C with explicit pin mapping and timeout (prevents bus hangs)
+  Wire.begin(D2, D1);                                 // SDA=D2 (GPIO4), SCL=D1 (GPIO5)
+  Wire.setTimeOut(250);                               // 250ms bus timeout
+
+  // Probe SHT30 sensor: primary address 0x45, fallback secondary address 0x44
+  if (sht30.begin(0x45)) {
+    sht30Address = 0x45;
+    sensorHealthy = true;
+    Serial.println("SHT30 sensor successfully initialized at primary address 0x45.");
+  } else if (sht30.begin(0x44)) {
+    sht30Address = 0x44;
+    sensorHealthy = true;
+    Serial.println("SHT30 sensor successfully initialized at secondary address 0x44.");
+  } else {
     sensorHealthy = false;
     i2cErrorCount++;
-    Serial.println("ERROR: SHT30 sensor shield not found at I2C address 0x45!");
-  } else {
-    sensorHealthy = true;
-    Serial.println("SHT30 sensor successfully initialized.");
+    Serial.println("ERROR: SHT30 sensor shield not found at address 0x45 or 0x44!");
   }
   
   // Read sensor once immediately on boot
@@ -1058,6 +1197,9 @@ void loop() {
     }
   }
   updateLed();
+
+  // Update non-blocking SHT30 heater timer
+  updateHeater();
 
   // Handle incoming HTTP Web Requests
   server.handleClient();
@@ -1109,15 +1251,26 @@ void readAndReportSensor() {
   if (!isnan(temp) && !isnan(hum)) {
     sensorHealthy = true;
 
-    // First run initialization of liquid temperature
+    // First run initialization of liquid temperature (with RTC memory restoration)
     if (lastLiquidTemp == -999.0f) {
-      currentLiquidTemp = temp;
+      float restoredTemp = 0.0f;
+      if (loadWineStateFromRtc(restoredTemp)) {
+        currentLiquidTemp = restoredTemp;
+        Serial.print("[Thermal Model] Restored simulated bottle temp from RTC memory: ");
+        Serial.print(currentLiquidTemp, 1);
+        Serial.println(" °C");
+      } else {
+        currentLiquidTemp = temp;
+        Serial.println("[Thermal Model] Initialized bottle temp to current air temp.");
+      }
+      saveWineStateToRtc(currentLiquidTemp);
     } else {
       // PT1 Low-pass thermal filter simulating 750ml bottle core temp
       // dt = 15s, tau = 12600s => alpha = dt / (tau + dt)
       float dt = (float)MEASURE_INTERVAL / 1000.0f;
       float alpha = dt / (THERMAL_TIME_CONSTANT_SEC + dt);
       currentLiquidTemp += alpha * (temp - currentLiquidTemp);
+      saveWineStateToRtc(currentLiquidTemp);
     }
 
     // Update global state variables
@@ -1128,13 +1281,42 @@ void readAndReportSensor() {
     currentAbsHum = calculateAbsoluteHumidity(temp, hum);
     currentVpd = calculateVPD(temp, hum);
 
-    // Wine preservation risk evaluations
-    currentCorkDryRisk = (hum < CORK_DRY_RH_THRESHOLD);
-    currentMoldRisk = (hum >= MOLD_RH_THRESHOLD);
-    currentCondensationRisk = (currentDewPointSpread <= CONDENSATION_TEMP_MARGIN);
-    currentFreezeRisk = (temp <= FREEZE_ALERT_TEMP);
-    currentWineTempLow = (temp < WINE_TEMP_MIN);
-    currentWineTempHigh = (temp > WINE_TEMP_MAX);
+    // Wine preservation risk evaluations with hysteresis (prevents alarm flapping)
+    if (currentCorkDryRisk) {
+      if (hum >= CORK_DRY_RH_CLEAR) currentCorkDryRisk = false;
+    } else {
+      if (hum < CORK_DRY_RH_THRESHOLD) currentCorkDryRisk = true;
+    }
+
+    if (currentMoldRisk) {
+      if (hum <= MOLD_RH_CLEAR) currentMoldRisk = false;
+    } else {
+      if (hum >= MOLD_RH_THRESHOLD) currentMoldRisk = true;
+    }
+
+    if (currentCondensationRisk) {
+      if (currentDewPointSpread >= CONDENSATION_MARGIN_CLEAR) currentCondensationRisk = false;
+    } else {
+      if (currentDewPointSpread <= CONDENSATION_TEMP_MARGIN) currentCondensationRisk = true;
+    }
+
+    if (currentFreezeRisk) {
+      if (temp >= FREEZE_ALERT_CLEAR) currentFreezeRisk = false;
+    } else {
+      if (temp <= FREEZE_ALERT_TEMP) currentFreezeRisk = true;
+    }
+
+    if (currentWineTempLow) {
+      if (temp >= WINE_TEMP_MIN_CLEAR) currentWineTempLow = false;
+    } else {
+      if (temp < WINE_TEMP_MIN) currentWineTempLow = true;
+    }
+
+    if (currentWineTempHigh) {
+      if (temp <= WINE_TEMP_MAX_CLEAR) currentWineTempHigh = false;
+    } else {
+      if (temp > WINE_TEMP_MAX) currentWineTempHigh = true;
+    }
 
     // Rapid temperature rise detection (Ring buffer over last 5 minutes)
     tempHistory[tempHistoryIndex] = temp;
@@ -1260,8 +1442,9 @@ void readAndReportSensor() {
     }
 
     // Periodic Metric Triggers (Emitted when changed significantly)
-    if (abs(currentLiquidTemp - lastLiquidTemp) >= 0.1f) {
+    if (abs(currentLiquidTemp - lastTriggerLiquidTemp) >= 0.1f || lastTriggerLiquidTemp == -999.0f) {
       Homey.trigger("liquid_temp", currentLiquidTemp);
+      lastTriggerLiquidTemp = currentLiquidTemp;
     }
 
     if (currentWineStatus != lastWineStatus) {

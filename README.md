@@ -8,17 +8,19 @@ It communicates natively with **Athom Homey** via the **Homeyduino** library to 
 
 ## 🍷 Key Wine Storage & Climate Features
 
-- **🌐 Embedded Wine Dashboard (Port 80):** Mobile-responsive dark-mode web interface accessible via browser (`http://<device-ip>/` or `http://<device-name>.local`). Features tabbed navigation separating wine telemetry from system diagnostics and controls.
-- **⚡ Non-Blocking Live Telemetry:** Uses non-blocking client-side asynchronous polling (`fetch('/api/data')`) every 3 seconds for instant real-time telemetry.
-- **🍾 Simulated Wine Core Temperature:** Implements a PT1 first-order low-pass thermal filter ($\tau \approx 3.5\text{h}$) modeling a standard 750ml wine bottle to filter out short-term air fluctuations caused by door openings.
-- **🪵 Cork Dryness & Preservation Alarm:** Continuous relative humidity monitoring with alerts when $\text{RH} < 50\%$ to prevent cork drying, shrinkage, and wine oxidation.
-- **🌡️ Wine Temperature Limit Alarms:** Lower warning limit ($< 8^\circ\text{C}$) and upper warning limit ($> 16^\circ\text{C}$) to protect wine structure.
+- **🌐 Embedded Wine Dashboard (Port 80):** Mobile-responsive dark-mode web interface accessible via browser (`http://<device-ip>/` or `http://<device-name>.local`). Served via zero-copy PROGMEM streaming saving ~20 KB of heap RAM.
+- **⚡ Non-Blocking Live Telemetry:** Uses non-blocking client-side asynchronous polling (`fetch('/api/data')`) every 3 seconds for instant real-time telemetry with pre-allocated JSON buffers.
+- **🍾 Simulated Wine Core Temperature & RTC Persistence:** Implements a PT1 first-order low-pass thermal filter ($\tau \approx 3.5\text{h}$) modeling a standard 750ml wine bottle. State is persisted to **ESP8266 RTC User Memory** across soft restarts and OTA updates to maintain continuous thermal modeling.
+- **♨️ SHT30 De-fog Heater & Moisture Bakeout:** Supports a 10-second on-demand sensor heating cycle via Homey Flow action or Web UI to clear condensation buildup in humid wine cabinets.
+- **🔍 Dual I2C Auto-Detection:** Automatically probes primary address `0x45` (standard Wemos shield) and falls back to secondary address `0x44` (jumpered shields) with bus timeout protection.
+- **🪵 Cork Dryness & Preservation Alarm with Hysteresis:** Continuous relative humidity monitoring with alerts when $\text{RH} < 50\%$ (clears at $\ge 52\%$) to prevent cork drying, shrinkage, and wine oxidation without alarm flapping.
+- **🌡️ Wine Temperature Limit Alarms:** Lower warning limit ($< 8^\circ\text{C}$, clears $\ge 8.5^\circ\text{C}$) and upper warning limit ($> 16^\circ\text{C}$, clears $\le 15.5^\circ\text{C}$) to protect wine structure.
 - **🚪 Rapid Temperature Rise / Door Open Alert:** Detects rapid thermal spikes ($\Delta T > 1.5^\circ\text{C}$ over a 5-minute rolling window) indicating an open door or compressor failure.
 - **💧 Condensation & Mold Prevention:** Automatically computes dew point, dew point spread margin, absolute humidity ($\text{g/m}^3$), and vapor pressure deficit (VPD) using peer-reviewed Magnus-Tetens formulas.
 - **🌙 Stealth Mode:** Disables onboard diagnostic LEDs for seamless placement inside glass-door wine cabinets. Can be toggled from Web UI or Homey flows.
 - **🏷️ Persistent Device Naming & mDNS:** Set custom names dynamically via Web UI (saved in EEPROM flash) or `secrets.h` with automatic mDNS hostname sanitization (`[a-z0-9-]`).
-- **📶 Hardware & Network Diagnostics:** Continuously monitors WiFi RSSI, supply rail voltage ($V_{cc}$), free heap RAM, fragmentation, uptime, and I2C/WiFi reconnect statistics.
-- **🛠️ Remote Maintenance Actions:** Supports remote reboot, stats reset, and stealth mode toggle from Homey Flows and Web UI.
+- **📶 Hardware & Network Diagnostics:** Continuously monitors WiFi RSSI, supply rail voltage ($V_{cc}$), free heap RAM, fragmentation, uptime, and I2C/WiFi reconnect statistics with flash-wear protection (`WiFi.persistent(false)`).
+- **🛠️ Remote Maintenance Actions:** Supports remote reboot, stats reset, stealth mode toggle, and sensor de-fogging from Homey Flows and Web UI.
 - **📡 Boot Notifications:** Emits a `device_booted` trigger to Homey on startup containing the reset reason (Power On, Watchdog, Exception).
 - **📶 Over-The-Air (OTA) Updates:** Allows wireless firmware flashing directly from the Arduino IDE.
 
@@ -31,17 +33,18 @@ Access the web dashboard in any browser on your local network:
 
 ### Tab 1: 📊 Wine Climate & Telemetry
 - **Hero Tiles:** Large gauges for **Simulated Wine Core Temp (°C)**, **Ambient Air Temp (°C)**, **Relative Humidity (%)**, and **Absolute Humidity ($\text{g/m}^3$)**.
-- **Wine Cabinet Alarms:** Live status pills for Cork Protection, Temperature Range (8–16°C), Rapid Rise / Open Door, Condensation Risk, Mold Control, and SHT30 Hardware Health.
+- **Wine Cabinet Alarms:** Live status pills for Cork Protection, Temperature Range (8–16°C), Rapid Rise / Open Door, Condensation Risk, Mold Control, and SHT30 Hardware Health (including active I2C address and heater status).
 - **Psychrometric Telemetry:** Dew Point (°C), Dew Point Margin Spread (°C), and Vapor Pressure Deficit (VPD in kPa).
 
 ### Tab 2: ⚙️ System Diagnostics & Control
 - **Device Configuration:** Edit and save custom device name to EEPROM with automatic reboot and mDNS update.
-- **Hardware Controls:** One-click toggles for **Stealth Mode (LED Off)**, **Clear Counters**, and **Reboot Node**.
+- **Hardware Controls:** One-click toggles for **Stealth Mode (LED Off)**, **De-fog Sensor (10s Heater)**, **Clear Counters**, and **Reboot Node**.
 - **Wireless & Network:** WiFi SSID, Signal Strength (RSSI in dBm), IP Address, and Reconnect Counter.
 - **Hardware & Resources:** System Uptime (*Xd Xh Xm Xs*), Internal Supply Rail Voltage ($V_{cc}$), Free Heap RAM (KB), and I2C Read Error Counter.
 
 ### REST API Endpoints
-- `GET /api/data`: Returns full telemetry and diagnostics JSON snapshot.
+- `GET /api/data`: Returns full telemetry and diagnostics JSON snapshot (including `heater_active` and `i2c_addr`).
+- `POST /api/defog`: Triggers a 10-second SHT30 sensor de-fog heater cycle.
 - `POST /api/set_name`: Updates custom device name in EEPROM (`name=<new_name>`) and reboots.
 - `POST /api/reset_name`: Clears EEPROM custom name and reverts to default name.
 - `POST /api/toggle_stealth`: Toggles onboard LED stealth mode.
@@ -68,7 +71,7 @@ Access the web dashboard in any browser on your local network:
 ## Flow Triggers & Tags (Homey Flows)
 
 ### Wine & Environmental Triggers ("WHEN" Cards)
-- `cork_dry_risk`: Boolean state tag (`true`/`false`) when $\text{RH} < 50.0\%$
+- `cork_dry_risk`: Boolean state tag (`true`/`false`) when $\text{RH} < 50.0\%$ (clears at $\ge 52.0\%$)
 - `cork_dry_alert`: Emitted when humidity drops below cork preservation threshold (tag: `% RH`)
 - `wine_temp_low`: Alert when temperature drops below $8.0^\circ\text{C}$ (tag: Temp °C)
 - `wine_temp_high`: Alert when temperature exceeds $16.0^\circ\text{C}$ (tag: Temp °C)
@@ -96,6 +99,7 @@ Access the web dashboard in any browser on your local network:
 - **`reset_stats`**: Clears the WiFi reconnect counter and I2C error counters.
 - **`set_stealth_mode`**: Sets stealth LED mode (`"true"`/`"false"` or `"1"`/`"0"`).
 - **`toggle_stealth_mode`**: Toggles stealth LED mode on/off.
+- **`defog_sensor`**: Activates SHT30 heater for 10 seconds to clear moisture/condensation.
 
 ---
 
