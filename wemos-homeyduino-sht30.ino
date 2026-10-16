@@ -97,22 +97,15 @@ ADC_MODE(ADC_VCC);
 // Include the local secrets file containing WiFi SSID, password and optional DEVICE_NAME
 #include "secrets.h"
 
+// Include RTC memory manager for persistent wine thermal modeling
+#include "wine_rtc.h"
+
 // --- EEPROM Memory Layout ---
 #define EEPROM_SIZE 64
 #define EEPROM_MAGIC_ADDR 0
 #define EEPROM_MAGIC_BYTE 0x5A                      // Indicates valid custom name stored in EEPROM
 #define EEPROM_NAME_ADDR 1
 #define MAX_NAME_LEN 31
-
-// --- RTC User Memory Layout (survives soft resets & OTA updates) ---
-#define RTC_WINE_MAGIC 0x57494E45                   // "WINE"
-#define RTC_USER_OFFSET 64                          // First safe 4-byte block in ESP8266 RTC user memory
-
-struct RtcWineData {
-  uint32_t magic;
-  float liquidTemp;
-  uint32_t checksum;
-};
 
 // --- Configuration & Wine Storage Constants ---
 const char* BASE_DEVICE_NAME = "Wemos-SHT30";
@@ -220,35 +213,6 @@ String lastWineStatus = "";
 int lastRssi = 999;
 float lastVcc = -999.0f;
 uint32_t lastFreeHeap = 0;
-
-// --- RTC Memory Wine State Persistence ---
-
-static inline uint32_t calculateRtcChecksum(const RtcWineData& data) {
-  uint32_t tempBits;
-  memcpy(&tempBits, &data.liquidTemp, sizeof(float));
-  return data.magic ^ tempBits ^ 0xAA55AA55;
-}
-
-bool loadWineStateFromRtc(float& tempOut) {
-  RtcWineData data;
-  if (ESP.rtcUserMemoryRead(RTC_USER_OFFSET, (uint32_t*)&data, sizeof(data))) {
-    if (data.magic == RTC_WINE_MAGIC && data.checksum == calculateRtcChecksum(data)) {
-      if (!isnan(data.liquidTemp) && data.liquidTemp > -10.0f && data.liquidTemp < 50.0f) {
-        tempOut = data.liquidTemp;
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-void saveWineStateToRtc(float temp) {
-  RtcWineData data;
-  data.magic = RTC_WINE_MAGIC;
-  data.liquidTemp = temp;
-  data.checksum = calculateRtcChecksum(data);
-  ESP.rtcUserMemoryWrite(RTC_USER_OFFSET, (uint32_t*)&data, sizeof(data));
-}
 
 // --- EEPROM Device Name Management & mDNS Sanitization ---
 
@@ -1151,7 +1115,7 @@ void setup() {
 
   // Initialize I2C with explicit pin mapping and timeout (prevents bus hangs)
   Wire.begin(D2, D1);                                 // SDA=D2 (GPIO4), SCL=D1 (GPIO5)
-  Wire.setTimeOut(250);                               // 250ms bus timeout
+  Wire.setTimeout(250);                               // 250ms bus timeout
 
   // Probe SHT30 sensor: primary address 0x45, fallback secondary address 0x44
   if (sht30.begin(0x45)) {
